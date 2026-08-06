@@ -143,6 +143,11 @@ The base runtime (OpenCV, numpy, pycolmap, ffmpeg) installs automatically. SAM 3
 > & "<LichtFeld Studio folder>\bin\uv.exe" sync
 > ```
 
+> [!IMPORTANT]
+> **Built LichtFeld Studio from source?** The plugin install needs `uv.exe` sitting next to the LichtFeld Studio executable (in the same folder, or in a `bin\` subfolder beside it). LichtFeld only looks there and ignores any uv on your system PATH. Official releases bundle it; source builds download it during the CMake configure step, but if that download fails the build still succeeds with only a warning, and plugin installs then fail with a UV error.
+>
+> **Fix:** download `uv-x86_64-pc-windows-msvc.zip` for uv **0.10.2** (the version LichtFeld pins) from the [uv releases page](https://github.com/astral-sh/uv/releases/tag/0.10.2), and copy `uv.exe` next to your `LichtFeld-Studio.exe`. Then restart LichtFeld Studio and click **Install** again. A uv installed any other way (pip, winget, the standalone installer) also works if you copy its `uv.exe` to that location, though newer uv versions are untested with LichtFeld.
+
 ### Manual
 
 ```bash

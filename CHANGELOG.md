@@ -2,7 +2,20 @@
 
 All notable changes to the 360 Plugin are documented here.
 
+Versioning: SemVer `MAJOR.MINOR.PATCH`, single source of truth =
+`pyproject.toml` `project.version` (what LichtFeld Studio reads). MAJOR =
+changes that break existing workflows (output folder layout, dataset
+structure, removal of an input path); MINOR = new capture path or feature
+(pre-1.0, breaking changes may also land here, flagged **BREAKING**); PATCH =
+fixes only. Each release notes the LichtFeld Studio version it was tested
+against; the minimum host is declared in `pyproject.toml`
+(`lichtfeld_version`).
+
 ## [Unreleased]
+
+## [0.3.0] - 2026-08-06
+
+Tested against LichtFeld Studio v0.5.3 (32ded4bd).
 
 ### Added
 - Projection-first input menu. The input is a **Source** section: it starts
@@ -217,6 +230,7 @@ All notable changes to the 360 Plugin are documented here.
   baseline works everywhere without it.
 
 [#2]: https://github.com/alexmgee/lichtfeld-360-plugin/issues/2
+[#3]: https://github.com/alexmgee/lichtfeld-360-plugin/issues/3
 [#5]: https://github.com/alexmgee/lichtfeld-360-plugin/issues/5
 [#6]: https://github.com/alexmgee/lichtfeld-360-plugin/issues/6
 [#8]: https://github.com/alexmgee/lichtfeld-360-plugin/issues/8
