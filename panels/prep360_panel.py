@@ -432,6 +432,7 @@ class Plugin360Panel(lf.ui.Panel):
         self._back_video_path: str = ""
         self._keep_streams: bool = False
         self._keep_extracted_data: bool = True  # keep frames & masks by default
+        self._keep_source_images: bool = True  # never delete a user's image folder unless asked
         self._fisheye_training_output_idx: int = 0  # native by default
         self._training_output_idx: int = 0  # image-folder: native by default
         self._fisheye_circle_margin: float = 6.0
@@ -442,7 +443,13 @@ class Plugin360Panel(lf.ui.Panel):
         self._fisheye_dir: str = ""      # one-folder fisheye (front_/back_ files)
         self._front_dir: str = ""        # two-folder fisheye: front lens frames
         self._back_dir: str = ""         # two-folder fisheye: back lens frames
-        self._fisheye_folder_mode: str = "one"  # "one" | "two"
+        # Two orthogonal questions, mirroring the two UI rows: how many lenses,
+        # and (for dual) where the files live. Keeping them separate means the
+        # structure choice survives a trip through Single lens and back.
+        self._fisheye_lenses: str = "single"      # "single" | "dual" -- Single is
+        # the starting state: it is the simpler case and needs no second control,
+        # so the panel opens with the Structure row hidden.
+        self._fisheye_folder_mode: str = "one"    # "one" | "two" (dual only)
         self._mask_source: str = "generate"     # "generate" | "preexisting" | "none"
         self._preexisting_mask_dir: str = ""
 
@@ -741,6 +748,30 @@ class Plugin360Panel(lf.ui.Panel):
         model.bind_func("camera_family_detected_text", self._get_camera_family_detected_text)
         model.bind("keep_streams", lambda: self._keep_streams, self._set_keep_streams)
         model.bind("keep_extracted_data", lambda: self._keep_extracted_data, self._set_keep_extracted_data)
+        # "Keep source images" — the Native/Both image-folder tracks consume the
+        # user's source folder once its frames live in the kept dataset: fisheye
+        # copies then deletes it, ERP Native moves the frames out and rmdirs it.
+        # Either way the folder is gone, which is wrong when it is itself a
+        # dataset the user keeps, so consuming it is opt-in. Shown only where it
+        # can actually fire — NOT for direct Pinhole (reframes, reads only), the
+        # Pinhole training track (solves in a temp, source untouched), or Single
+        # lens (always copies).
+        model.bind("keep_source_images",
+                   lambda: self._keep_source_images, self._set_keep_source_images)
+        model.bind_func(
+            "show_keep_source_images",
+            lambda: (
+                self._source_mode_idx == 2
+                and (
+                    (self._projection == "fisheye"
+                     and self._fisheye_lenses == "dual"
+                     and self._get_fisheye_training_output() in ("native", "both"))
+                    or (self._projection == "erp"
+                        and self._get_output_mode() == "erp_native"
+                        and self._get_training_output() in ("native", "both"))
+                )
+            ),
+        )
         # "Keep frames & masks" — retain the extracted source frames + masks as
         # <output>/images + <output>/masks deliverables next to the pinhole
         # dataset. Shown for the VIDEO runs that produce a pinhole dataset with
@@ -775,12 +806,23 @@ class Plugin360Panel(lf.ui.Panel):
         # R1: Folders is an inline two-way control rather than a dropdown (the
         # dropdown overlapped its neighbouring row). Same _fisheye_folder_mode
         # state; the active button is driven by data-class-is-active.
+        model.bind_func("lenses_is_dual",
+                        lambda: self._fisheye_lenses == "dual")
+        model.bind_func("lenses_is_single",
+                        lambda: self._fisheye_lenses == "single")
+        model.bind_event("set_lenses_dual", self._on_set_lenses_dual)
+        model.bind_event("set_lenses_single", self._on_set_lenses_single)
         model.bind_func("folder_mode_is_one",
                         lambda: self._fisheye_folder_mode == "one")
         model.bind_func("folder_mode_is_two",
-                        lambda: self._fisheye_folder_mode != "one")
+                        lambda: self._fisheye_folder_mode == "two")
         model.bind_event("set_folder_mode_one", self._on_set_folder_mode_one)
         model.bind_event("set_folder_mode_two", self._on_set_folder_mode_two)
+        # The Structure row asks where the files live -- only meaningful when
+        # there are two lenses to lay out.
+        model.bind_func("show_fisheye_structure",
+                        lambda: is_image_folder() and self._projection == "fisheye"
+                        and self._fisheye_lenses == "dual")
         model.bind("mask_source_idx",
                    lambda: str(("generate", "preexisting", "none").index(self._mask_source)),
                    self._set_mask_source)
@@ -790,17 +832,25 @@ class Plugin360Panel(lf.ui.Panel):
                         lambda: is_image_folder() and self._projection == "fisheye")
         model.bind_func("show_image_fisheye_one",
                         lambda: is_image_folder() and self._projection == "fisheye"
+                        and self._fisheye_lenses == "dual"
                         and self._fisheye_folder_mode == "one")
         model.bind_func("show_image_fisheye_two",
                         lambda: is_image_folder() and self._projection == "fisheye"
+                        and self._fisheye_lenses == "dual"
                         and self._fisheye_folder_mode == "two")
-        # Pre-existing masks only for ERP + Pinhole (AR-N2)
-        model.bind_func("show_preexisting_mask_option",
-                        lambda: is_image_folder() and self._get_output_mode() == "pinhole")
-        model.bind_func("show_masks_generate_none",
-                        lambda: is_image_folder() and self._get_output_mode() != "pinhole")
+        # Single lens reuses the same _fisheye_dir picker as One folder, but with
+        # its own label + helper text (no front_/back_ pairing to explain).
+        model.bind_func("show_image_fisheye_single",
+                        lambda: is_image_folder() and self._projection == "fisheye"
+                        and self._fisheye_lenses == "single")
+        # Pre-existing masks are available for every image-folder projection and
+        # Output Mode; only the expected folder LAYOUT differs (see
+        # _preexisting_mask_layout_hint).
+        model.bind_func("show_preexisting_mask_option", is_image_folder)
         model.bind_func("show_preexisting_mask_picker",
                         lambda: is_image_folder() and self._mask_source == "preexisting")
+        model.bind_func("preexisting_mask_layout_hint",
+                        self._preexisting_mask_layout_hint)
         model.bind_func("image_dir_text", lambda: self._image_dir or "(not set)")
         model.bind_func("fisheye_dir_text", lambda: self._fisheye_dir or "(not set)")
         model.bind_func("front_dir_text", lambda: self._front_dir or "(not set)")
@@ -1027,6 +1077,18 @@ class Plugin360Panel(lf.ui.Panel):
         if 0 <= self._output_mode_idx < len(OUTPUT_MODES):
             return OUTPUT_MODES[self._output_mode_idx]
         return "pinhole"
+
+    def _preexisting_mask_layout_hint(self) -> str:
+        """One-line reminder of the mask folder layout the run expects."""
+        if self._projection != "fisheye":
+            return "PNG masks named to match your frames."
+        if self._fisheye_lenses == "single":
+            return "One folder of PNG masks named to match your frames."
+        if self._fisheye_folder_mode == "one":
+            return ("One folder of PNG masks using the same front_/back_ names "
+                    "as your frames.")
+        return ("A folder holding front/ and back/ subfolders of PNG masks, "
+                "named to match your frames.")
 
     def _get_fisheye_training_output(self) -> str:
         if 0 <= self._fisheye_training_output_idx < len(FISHEYE_TRAINING_OUTPUTS):
@@ -1346,7 +1408,10 @@ class Plugin360Panel(lf.ui.Panel):
             if self._projection == "erp":
                 where = self._image_dir or "(no folder selected)"
                 return f"Image folder (Equirectangular) | {proc} | {where}"
-            if self._fisheye_folder_mode == "one":
+            if self._fisheye_lenses == "single":
+                where = self._fisheye_dir or "(no folder selected)"
+                mode = "single lens"
+            elif self._fisheye_folder_mode == "one":
                 where = self._fisheye_dir or "(no folder selected)"
                 mode = "one folder"
             else:
@@ -2705,6 +2770,12 @@ class Plugin360Panel(lf.ui.Panel):
         else:
             self._keep_extracted_data = str(val).lower() in ("true", "1", "yes", "on")
 
+    def _set_keep_source_images(self, val):
+        if isinstance(val, bool):
+            self._keep_source_images = val
+        else:
+            self._keep_extracted_data = str(val).lower() in ("true", "1", "yes", "on")
+
     def _set_front_video_path_noop(self, val):
         # Path is set by _on_select_front_video, not by user typing.
         # This setter exists so model.bind() has a setter callback.
@@ -2839,11 +2910,12 @@ class Plugin360Panel(lf.ui.Panel):
             # Processing is moot for fisheye (output is chosen by Training
             # output); mirror the old fisheye transitions.
             self._processing_idx = PINHOLE_PROCESSING_IDX
-        # Transplanted from the retired image-folder projection dropdown
-        # (AR-N2): reset a stale pre-existing mask choice when the mode
-        # leaves ERP+Pinhole.
-        if self._get_output_mode() != "pinhole" and self._mask_source == "preexisting":
-            self._mask_source = "generate"
+        # Both projections accept pre-existing masks, but the folder layout they
+        # expect differs, so a folder picked for the old projection is unlikely
+        # to match. Drop it and keep the mask source; the run is gated on a
+        # folder being selected anyway.
+        if self._mask_source == "preexisting":
+            self._preexisting_mask_dir = ""
         self._error_message = ""
         self._apply_mode_side_effects(force_sift=True)
 
@@ -2873,6 +2945,9 @@ class Plugin360Panel(lf.ui.Panel):
         self._front_dir = ""
         self._back_dir = ""
         self._preexisting_mask_dir = ""
+        # Back to the on-load state: Single lens, structure choice reset too.
+        self._fisheye_lenses = "single"
+        self._fisheye_folder_mode = "one"
         self._error_message = ""
         self._apply_mode_side_effects(force_sift=True)
 
@@ -2928,13 +3003,36 @@ class Plugin360Panel(lf.ui.Panel):
         """Folders toggle: separate front + back folders."""
         self._set_fisheye_folder_mode("1")
 
+    def _on_set_lenses_dual(self, handle, event, args):
+        """Lenses toggle: a dual-fisheye pair."""
+        del handle, event, args
+        self._set_fisheye_lenses("dual")
+
+    def _on_set_lenses_single(self, handle, event, args):
+        """Lenses toggle: one lens only (no pairing, no rig)."""
+        del handle, event, args
+        self._set_fisheye_lenses("single")
+
+    def _set_fisheye_lenses(self, value: str):
+        if value not in ("dual", "single"):
+            return
+        self._fisheye_lenses = value
+        # Dual and single expect different mask-folder layouts, so a folder
+        # picked for the other one would not match.
+        self._preexisting_mask_dir = ""
+        if self._handle:
+            self._handle.dirty_all()
+
     def _set_fisheye_folder_mode(self, val):
-        """One (single folder of front_/back_ files) vs Two (front + back)."""
+        """One (shared folder of front_/back_ files) vs Two (front + back)."""
         try:
             idx = int(val)
         except (TypeError, ValueError):
             return
         self._fisheye_folder_mode = "one" if idx == 0 else "two"
+        # Structure decides which pipeline runs, so a mask folder picked for the
+        # previous structure would point at the wrong layout.
+        self._preexisting_mask_dir = ""
         if self._handle:
             self._handle.dirty_all()
 
@@ -3227,7 +3325,10 @@ class Plugin360Panel(lf.ui.Panel):
         from ..core.frame_source import assert_source_reads_safe
         if self._projection == "erp":
             dirs = {"Image folder": self._image_dir}
-        elif self._fisheye_folder_mode == "one":
+        elif self._fisheye_lenses == "single" or self._fisheye_folder_mode == "one":
+            # Both use the single "Fisheye frames" picker; lenses is checked
+            # first because the structure choice is retained (but inert) while
+            # Single lens is selected.
             dirs = {"Fisheye frames folder": self._fisheye_dir}
         else:
             dirs = {
@@ -3238,9 +3339,6 @@ class Plugin360Panel(lf.ui.Panel):
             if not d:
                 return f"{label} is not selected"
         if self._mask_source == "preexisting":
-            if self._get_output_mode() != "pinhole":
-                return ("Pre-existing masks are only available for "
-                        "Equirectangular + Pinhole output")
             if not self._preexisting_mask_dir:
                 return "Pre-existing masks folder is not selected"
         # Pre-run guard: frames are read in place, so reject only a source that
@@ -3406,7 +3504,10 @@ class Plugin360Panel(lf.ui.Panel):
             # Dual fisheye fields
             input_type=(
                 "single_fisheye"
-                if (output_mode == "fisheye" and self._fisheye_single_lens)
+                if (output_mode == "fisheye"
+                    and (self._fisheye_single_lens
+                         or (is_image_folder
+                             and self._fisheye_lenses == "single")))
                 else "dual_fisheye" if output_mode == "fisheye" else "erp"
             ),
             camera_family=(
@@ -3436,18 +3537,21 @@ class Plugin360Panel(lf.ui.Panel):
                 if (is_image_folder and self._projection == "erp")
                 else self._fisheye_dir
                 if (is_image_folder and self._projection == "fisheye"
-                    and self._fisheye_folder_mode == "one")
+                    and (self._fisheye_lenses == "single"
+                         or self._fisheye_folder_mode == "one"))
                 else ""
             ),
             image_front_dir=(
                 self._front_dir
                 if (is_image_folder and self._projection == "fisheye"
+                    and self._fisheye_lenses == "dual"
                     and self._fisheye_folder_mode == "two")
                 else ""
             ),
             image_back_dir=(
                 self._back_dir
                 if (is_image_folder and self._projection == "fisheye"
+                    and self._fisheye_lenses == "dual"
                     and self._fisheye_folder_mode == "two")
                 else ""
             ),
@@ -3459,6 +3563,7 @@ class Plugin360Panel(lf.ui.Panel):
             back_video_path=self._back_video_path,
             keep_streams=self._keep_streams,
             keep_extracted_data=self._keep_extracted_data,
+            keep_source_images=self._keep_source_images,
         )
 
         self._is_processing = True
@@ -3571,7 +3676,10 @@ class Plugin360Panel(lf.ui.Panel):
                 if self._source_mode_idx == 2 else self._STAGE_LABELS
             )
             self._processing_stage = _labels.get(stage, stage)
-            self._processing_progress = percent
+            # Overall pipeline progress must never regress within a run; raw sources
+            # (num_reg_frames FilterFrames dips, GPU-fallback stage restarts, mismatched
+            # slice bases) can each move backward. High-water clamp is the guarantee.
+            self._processing_progress = max(self._processing_progress, percent)
             self._processing_status = message
             if stage != prev_stage:
                 self._append_processing_log(self._processing_stage)

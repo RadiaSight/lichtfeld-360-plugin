@@ -13,6 +13,76 @@ against; the minimum host is declared in `pyproject.toml`
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-07
+
+Tested against LichtFeld Studio v0.5.3-201-gcc6c552d (cc6c552d).
+
+### Added
+- **Single lens fisheye image folders.** Fisheye → Image Folder now asks two
+  separate questions: **Lenses** (**Dual** / **Single**), and — for Dual only —
+  the existing **Structure** (**One folder** / **Front + back**). Choose
+  **Single**, point it at one folder from one lens with any filenames, and each
+  frame is solved on its own with `OPENCV_FISHEYE` — no front/back pairing and
+  no rig. Previously the
+  single-lens pipeline existed but was reachable only from a single-lens *video*,
+  so a folder of one-lens frames had no route through the plugin at all. Uses
+  the same pipeline as the single-lens video path (only the frame source
+  differs), so Training output Native/Pinhole/Both and pre-existing masks all
+  work identically. Frames are copied, never moved, so the source folder always
+  survives. An image folder that sits inside the Output Path is refused before
+  anything is written, naming the overlap: this path recreates
+  `<output>/native/extracted/` and replaces `<output>/native/images/`, so a
+  source nested in there would be deleted.
+- **Keep source images** checkbox for image folders on Native and Both output.
+  Both projections consumed the folder you picked, by different routes: dual-lens
+  Fisheye copied the frames into the dataset and then deleted the source, while
+  Equirectangular Native moved the frames out and removed the emptied folder.
+  That is destructive when the folder is itself a dataset you keep — for example
+  a previous run's `colmap/native/images/`. **The option is on by default, so
+  source folders are no longer consumed unless you ask.** Uncheck it to reclaim
+  the disk space as before. The checkbox appears only where the source is
+  actually at risk: not for direct Pinhole or the Pinhole training output (which
+  read the source and leave it alone), and not for Fisheye **Lenses: Single**
+  (which always copies).
+- **Pre-existing masks for the Fisheye image folder.** Previously Fisheye
+  offered only Generate with SAM 3 or None. Supply your own lens masks and they
+  are staged onto the paired index names the frames are renamed to, then read by
+  COLMAP and carried into the pinhole propagation exactly like generated ones.
+  The mask folder mirrors the frames: **One folder** takes a flat folder using
+  the same `front_`/`back_` names, **Front + back** takes a folder holding
+  `front/` and `back/` subfolders. Masks are matched to their frame by the
+  frame's original filename, so the pairing cannot drift. This is the same
+  layout the plugin writes to `<output>/masks/`, so an earlier run's masks can
+  be fed straight back in. Masks must be PNG (COLMAP reads no other format) and
+  every frame needs one -- a missing mask makes COLMAP drop that image, so the
+  run stops up front naming the first frame without one.
+
+### Fixed
+- **Pre-existing masks now work with Native output.** For an Equirectangular
+  image folder, "Use pre-existing masks" was offered only when Output Mode was
+  Pinhole; switching to Native silently replaced the choice with "Generate with
+  SAM 3" and offered no way back. The pipeline had already supported user masks
+  on the Native path since the image-folder rework — it stages them into the
+  mask folder the chosen output uses, where COLMAP reads them directly — but the
+  panel still enforced the older Pinhole-only rule. The Masks menu no longer
+  depends on the Output Mode at all, so the choice stays put across Pinhole,
+  Native, and Both.
+- Selecting pre-existing masks and then changing Output Mode no longer leaves
+  the "Masks folder" row stranded on screen next to a Masks menu that no longer
+  lists the option.
+- COLMAP alignment progress bar no longer runs backwards during "registering
+  images". It was showing COLMAP's internal image ID — which the mapper visits
+  in a quality-driven, non-sequential order — rather than the number of frames
+  actually registered. It now reports registered frames over total frames, and
+  the displayed bar is clamped so it can never regress within a run (absorbing
+  the small dips when COLMAP de-registers frames during its periodic global
+  refinement).
+- COLMAP sub-stages (feature extraction, matching, mapping) each occupy their
+  own band of the alignment progress range, instead of all sharing one slice
+  and restarting it at every stage boundary.
+- The global (GLOMAP) mapper reports real progress through its phases instead
+  of freezing at the start of mapping and snapping to done at the end.
+
 ## [0.3.0] - 2026-08-06
 
 Tested against LichtFeld Studio v0.5.3 (32ded4bd).

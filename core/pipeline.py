@@ -50,6 +50,19 @@ logger = logging.getLogger(__name__)
 # usually means the source was incomplete (still being copied) or corrupt.
 _ALL_FRAMES_MIN_RATIO = 0.9
 
+_COLMAP_BANDS = {          # weights within the alignment slice; sum to 1.0
+    "features": (0.00, 0.15),
+    "rig":      (0.15, 0.18),
+    "matching": (0.18, 0.50),
+    "mapping":  (0.50, 1.00),
+}
+
+
+def _colmap_band(stage: str, pct: float, base: float, top: float) -> float:
+    lo, hi = _COLMAP_BANDS.get(stage, (0.0, 1.0))
+    frac = lo + max(0.0, min(1.0, pct)) * (hi - lo)
+    return base + frac * (top - base)
+
 
 def _assert_all_frames_complete(
     all_frames: bool, expected_frame_count: int, extracted: int
@@ -153,6 +166,7 @@ class PipelineConfig:
                                        # (video fisheye keeps fisheye_training_output)
     keep_streams: bool = False  # retain demuxed front.mp4/back.mp4 alongside output
     keep_extracted_data: bool = True  # keep extracted frames + masks as <output>/images + <output>/masks deliverables (ERP/Fisheye Pinhole); default on so generated data is never silently discarded
+    keep_source_images: bool = True  # image-folder input only: leave the user's source folder intact instead of consuming it into the dataset (fisheye Native/Both delete it; ERP Native moves its frames out). Default on -- an image folder may be a dataset the user keeps
 
     # Fisheye masking
     fisheye_circle_margin: float = 6.0  # Circle mask margin in percent
@@ -260,21 +274,20 @@ def _flatten_view_folders(parent_dir: Path) -> None:
 def resolve_image_folder_masking(cfg: "PipelineConfig") -> str:
     """Resolve the image-folder mask behavior from cfg.mask_source.
 
-    Returns "generate", "preexisting", or "none". Pre-existing masks are
-    valid only on the ERP -> Pinhole path (output_mode == "pinhole"), the
-    only pipeline path with a reframe_mask_dir channel to hand user masks to
-    the reframer (AR-N2). Any other combination raises so the masks are never
-    silently dropped. "generate" and "none" are valid for every image-folder
-    mode.
+    Returns "generate", "preexisting", or "none". Pre-existing masks are valid
+    on every image-folder mode: ERP "pinhole" (the reframer projects them per
+    view), ERP "erp_native" (COLMAP reads them directly), and "fisheye" (staged
+    to the paired index names by _stage_preexisting_lens_masks). "generate" and
+    "none" are likewise valid everywhere.
     """
     source = (cfg.mask_source or "generate").lower()
     if source not in ("generate", "preexisting", "none"):
         raise ValueError(f"Unknown mask_source: {cfg.mask_source!r}")
     if source == "preexisting":
-        if cfg.output_mode != "pinhole":
+        if cfg.output_mode not in ("pinhole", "erp_native", "fisheye"):
             raise ValueError(
-                "Pre-existing masks are only supported for ERP + Pinhole "
-                f"output, not output_mode={cfg.output_mode!r}."
+                "Pre-existing masks are only supported for image-folder "
+                f"input, not output_mode={cfg.output_mode!r}."
             )
         if not cfg.preexisting_mask_dir:
             raise ValueError(
@@ -1019,7 +1032,7 @@ class PipelineJob:
 
         def _colmap_progress(stage: str, pct: float, msg: str) -> None:
             # ColmapRunner reports pct as 0.0-1.0 per sub-stage
-            self._update("colmap", 57 + pct * 28, msg)
+            self._update("colmap", _colmap_band(stage, pct, 57.0, 85.0), msg)
 
         # Pass mask directory to COLMAP if masks were generated.
         # Use Voronoi-combined masks (colmap_masks_dir) if available,
@@ -1500,7 +1513,7 @@ class PipelineJob:
         )
 
         def _colmap_progress(stage: str, pct: float, msg: str) -> None:
-            self._update("colmap", 55 + pct * 30, msg)
+            self._update("colmap", _colmap_band(stage, pct, 55.0, 85.0), msg)
 
         runner = ColmapRunner(
             images_dir=str(source),
@@ -1523,10 +1536,22 @@ class PipelineJob:
             if self._check_cancel():
                 raise RuntimeError("Cancelled")
             from .frame_source import relocate_erp_frames_to_colmap
-            self._update("output", 88.0, "Moving frames into images...")
+            # Only an IMAGE FOLDER has a user-owned source to preserve. The video
+            # ERP path passes its own extracted/frames dir, which must always be
+            # consumed -- hence the image_source_dir test rather than the flag
+            # alone.
+            keep_source = bool(cfg.image_source_dir) and cfg.keep_source_images
+            self._update(
+                "output", 88.0,
+                "Copying frames into images..." if keep_source
+                else "Moving frames into images...")
             num_output_images, source_removed = relocate_erp_frames_to_colmap(
-                source, dataset_dir)
-            if not source_removed:
+                source, dataset_dir, keep_source=keep_source)
+            if keep_source:
+                logger.info(
+                    "Copied %d frames into %s; source %s kept "
+                    "(keep_source_images)", num_output_images, dataset_dir, source)
+            elif not source_removed:
                 logger.warning(
                     "Source folder %s not empty after moving frames; "
                     "left in place.", source)
@@ -1981,7 +2006,7 @@ class PipelineJob:
         )
 
         def _colmap_progress(stage: str, pct: float, msg: str) -> None:
-            self._update("colmap", 57 + pct * 28, msg)
+            self._update("colmap", _colmap_band(stage, pct, 57.0, 85.0), msg)
 
         effective_mask_path = (
             overlap_masks_dir if overlap_masks_dir.is_dir()
@@ -2082,10 +2107,22 @@ class PipelineJob:
     def _run_single_fisheye_native(
         self, cfg: PipelineConfig, t0: float,
     ) -> PipelineResult:
-        """Single fisheye pipeline: extraction → masking → COLMAP → output."""
+        """Single fisheye pipeline: frames → masking → COLMAP → output.
+
+        Frames come either from a video (sharpest-frame extraction) or, when
+        ``cfg.image_source_dir`` is set, from a folder of already-extracted
+        single-lens frames. Only Stage 1 differs -- both fill
+        ``extracted/front``, and every later stage is identical.
+        """
         import shutil
 
         from .fisheye_priors import infer_fisheye_camera_params
+        from .frame_source import (
+            assert_source_outside_output,
+            list_images_natural,
+            stage_single_lens_frames,
+            validate_mask_pairing,
+        )
 
         out = Path(cfg.output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -2093,59 +2130,119 @@ class PipelineJob:
         extracted_front_dir = extracted_dir / "front"
         images_dir = out / "images"
 
-        # ===================================================================
-        # Stage 1: Sharpest-frame extraction (0-50%)
-        # ===================================================================
         print(f"\n[pipeline] Output mode: {cfg.output_mode}")
         print(f"[pipeline] Output: {out}")
-        print("[pipeline] Stage 1: Single-fisheye extraction starting...")
-        self._update("extraction", 0.0, "Extracting fisheye frames...")
 
-        extractor = SharpestExtractor()
-        extract_config = SharpestConfig(
-            interval=cfg.interval,
-            extraction_sharpness=cfg.extraction_sharpness,
-            blur_metric=cfg.blur_metric,
-            scene_threshold=cfg.scene_threshold,
-            scale_width=cfg.blur_scale_width,
-            quality=cfg.quality,
-            start_sec=cfg.start_sec,
-            end_sec=cfg.end_sec,
-            all_frames=cfg.all_frames,
-        )
+        # ===================================================================
+        # Stage 1: Fill extracted/front (0-50%) -- from a folder or a video
+        # ===================================================================
+        if cfg.image_source_dir:
+            # Image-folder input: the frames already exist, so there is nothing
+            # to extract. Copy them into the pipeline's own extracted/front so
+            # every later stage is byte-for-byte the video path. A COPY, never a
+            # move: an image folder may itself be a dataset the user keeps.
+            print("[pipeline] Stage 1: Staging single-lens fisheye folder...")
+            self._update("staging", 0.0, "Reading fisheye image folder...")
+            # Strictest guard, NOT assert_source_reads_safe: this path owns and
+            # REPLACES whole directories under cfg.output_dir -- extracted/front
+            # is recreated here and images/front is rmtree'd in Stage 3. A source
+            # anywhere inside the output would be destroyed, and the lenient
+            # guard only protects colmap/, masks/ and metadata/.
+            assert_source_outside_output(cfg.image_source_dir, cfg.output_dir)
 
-        def _extract_progress(cur: int, total: int, msg: str) -> None:
-            pct = (cur / max(total, 1)) * 50
-            self._update("extraction", pct, msg)
+            def _stage_progress(cur: int, total: int, msg: str) -> None:
+                self._update("staging", (cur / max(total, 1)) * 50, msg)
 
-        extract_result = extractor.extract(
-            cfg.video_path,
-            str(extracted_front_dir),
-            extract_config,
-            progress_callback=_extract_progress,
-            cancel_check=self._check_cancel,
-        )
-        if not extract_result.success:
-            raise RuntimeError(
-                f"Single fisheye extraction failed: {extract_result.error}"
+            frame_count = stage_single_lens_frames(
+                cfg.image_source_dir,
+                extracted_front_dir,
+                cancel_check=self._check_cancel,
+                on_progress=_stage_progress,
+            )
+            gpu_accel = False
+            logger.info(
+                "Staged %d single-fisheye frames from %s",
+                frame_count, cfg.image_source_dir,
+            )
+        else:
+            print("[pipeline] Stage 1: Single-fisheye extraction starting...")
+            self._update("extraction", 0.0, "Extracting fisheye frames...")
+
+            extractor = SharpestExtractor()
+            extract_config = SharpestConfig(
+                interval=cfg.interval,
+                extraction_sharpness=cfg.extraction_sharpness,
+                blur_metric=cfg.blur_metric,
+                scene_threshold=cfg.scene_threshold,
+                scale_width=cfg.blur_scale_width,
+                quality=cfg.quality,
+                start_sec=cfg.start_sec,
+                end_sec=cfg.end_sec,
+                all_frames=cfg.all_frames,
             )
 
-        frame_count = extract_result.frames_extracted
-        _assert_all_frames_complete(
-            cfg.all_frames, cfg.expected_frame_count, frame_count)
-        gpu_accel = getattr(extract_result, "gpu_accelerated", False)
-        logger.info(
-            "Extracted %d single-fisheye frames%s",
-            frame_count, " (GPU)" if gpu_accel else "",
-        )
+            def _extract_progress(cur: int, total: int, msg: str) -> None:
+                pct = (cur / max(total, 1)) * 50
+                self._update("extraction", pct, msg)
+
+            extract_result = extractor.extract(
+                cfg.video_path,
+                str(extracted_front_dir),
+                extract_config,
+                progress_callback=_extract_progress,
+                cancel_check=self._check_cancel,
+            )
+            if not extract_result.success:
+                raise RuntimeError(
+                    f"Single fisheye extraction failed: {extract_result.error}"
+                )
+
+            frame_count = extract_result.frames_extracted
+            _assert_all_frames_complete(
+                cfg.all_frames, cfg.expected_frame_count, frame_count)
+            gpu_accel = getattr(extract_result, "gpu_accelerated", False)
+            logger.info(
+                "Extracted %d single-fisheye frames%s",
+                frame_count, " (GPU)" if gpu_accel else "",
+            )
 
         if self._check_cancel():
             raise RuntimeError("Cancelled")
 
         # ===================================================================
-        # Stage 2: Fisheye masking (SAM3 + circle mask)
+        # Stage 2: Fisheye masks -- staged from the user's, or SAM3 + circle
         # ===================================================================
-        mask_enabled = cfg.enable_masking
+        mask_source = (cfg.mask_source or "generate").lower()
+        use_preexisting = bool(cfg.image_source_dir) and mask_source == "preexisting"
+        mask_enabled = cfg.enable_masking and not use_preexisting
+        # Drives Stage 3: true when masks exist by EITHER route. cfg.enable_masking
+        # is False for pre-existing masks, so it cannot gate the staging move.
+        mask_ready = False
+
+        if use_preexisting:
+            self._update("masking", 20.0, "Staging pre-existing fisheye masks...")
+            assert_source_outside_output(cfg.preexisting_mask_dir, cfg.output_dir)
+            staged_frames, _ = list_images_natural(extracted_front_dir)
+            user_masks, _ = list_images_natural(cfg.preexisting_mask_dir)
+            validate_mask_pairing(staged_frames, user_masks)
+            non_png = [m.name for m in user_masks if m.suffix.lower() != ".png"]
+            if non_png:
+                raise ValueError(
+                    f"Fisheye masks must be PNG: found {non_png[0]} in "
+                    f"{cfg.preexisting_mask_dir}. COLMAP reads no other format."
+                )
+            lens_masks_dir = extracted_dir / "masks" / "front"
+            lens_masks_dir.mkdir(parents=True, exist_ok=True)
+            for _m in user_masks:
+                shutil.copy2(_m, lens_masks_dir / _m.name)
+            mask_ready = True
+            logger.info(
+                "Staged %d pre-existing single-fisheye masks from %s",
+                len(user_masks), cfg.preexisting_mask_dir,
+            )
+            if self._check_cancel():
+                raise RuntimeError("Cancelled")
+
         print(f"[pipeline] Stage 2: Masking {'enabled' if mask_enabled else 'disabled'}")
         if mask_enabled:
             self._update("masking", 20.0, "Initializing SAM 3 for fisheye masking...")
@@ -2224,6 +2321,7 @@ class PipelineJob:
             finally:
                 backend.cleanup()
 
+            mask_ready = True
             if self._check_cancel():
                 raise RuntimeError("Cancelled")
 
@@ -2244,7 +2342,7 @@ class PipelineJob:
                 shutil.rmtree(dst, ignore_errors=True)
             src.rename(dst)
 
-        if mask_enabled:
+        if mask_ready:
             output_masks_dir = out / "masks"
             output_masks_dir.mkdir(parents=True, exist_ok=True)
             for lens in ("front",):
@@ -2299,7 +2397,7 @@ class PipelineJob:
 
         def _colmap_progress(stage: str, pct: float, msg: str) -> None:
             base = 55.0
-            self._update("colmap", base + pct * (95 - base), msg)
+            self._update("colmap", _colmap_band(stage, pct, base, 95.0), msg)
 
         runner = ColmapRunner(
             images_dir=str(images_dir),
@@ -2649,7 +2747,7 @@ class PipelineJob:
 
         def _colmap_progress(stage: str, pct: float, msg: str) -> None:
             base = 55.0
-            self._update("colmap", base + pct * (95 - base), msg)
+            self._update("colmap", _colmap_band(stage, pct, base, 95.0), msg)
 
         runner = ColmapRunner(
             images_dir=str(images_dir),

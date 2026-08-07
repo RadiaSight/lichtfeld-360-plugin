@@ -87,9 +87,12 @@ def assert_source_outside_output(src, out) -> None:
 # Directories every image-folder track writes under the unified layout. The
 # dataset (native and/or pinhole) lives under ``<output>/colmap/**``, plugin
 # masks under ``<output>/masks/**``, and the panel writes ``<output>/metadata/
-# timing.json`` on completion/failure. No image-folder track writes root
-# ``images/``, ``sparse/``, ``extracted/``, ``native/`` or ``pinhole/`` any
-# more, so those are no longer collision targets and the guard is mode-agnostic.
+# timing.json`` on completion/failure. The dual-lens and ERP image-folder tracks
+# write nothing else, so this list is their complete collision surface.
+# EXCEPTION: the single-lens fisheye image folder runs the single-fisheye
+# pipeline, which owns ``<output>/native/{images,extracted,masks,sparse}`` and
+# REPLACES those directories wholesale. It must therefore use the strict
+# assert_source_outside_output, not assert_source_reads_safe.
 _WRITE_DIRS_ALWAYS = ("colmap", "masks", "metadata")
 
 
@@ -218,6 +221,56 @@ def validate_mask_pairing(images, masks) -> None:
     return None
 
 
+def stage_single_lens_frames(
+    source_dir,
+    dest_dir,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
+) -> int:
+    """Copy a folder of single-lens fisheye frames into a pipeline working dir.
+
+    The image-folder substitute for the single-fisheye path's video extraction:
+    it fills the same ``extracted/front`` folder the extractor would, preserving
+    the original filenames so pre-existing masks still pair by stem. ``dest_dir``
+    is idempotently recreated. Always a COPY -- the user's folder is read and
+    never moved or emptied, so an image folder can safely be another dataset.
+    Raises ValueError if the source holds no images.
+
+    Recreating ``dest_dir`` is destructive, so an overlapping source is refused
+    BEFORE anything is deleted: otherwise a source that IS (or contains, or sits
+    inside) the destination would be wiped and then reported as "no images".
+    """
+    dest = Path(dest_dir)
+    src = Path(source_dir)
+    rdest, rsrc = dest.resolve(), src.resolve()
+    if rdest == rsrc or rdest.is_relative_to(rsrc) or rsrc.is_relative_to(rdest):
+        raise ValueError(
+            f"Refusing to stage {rsrc} into {rdest}: the source overlaps the "
+            "staging directory and would be deleted. Choose an output path "
+            "outside your image folder."
+        )
+
+    files, _warning = list_images_natural(src)
+    if not files:
+        raise ValueError(f"No images found in {source_dir}")
+
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    total = len(files)
+
+    staged = 0
+    for i, f in enumerate(files, start=1):
+        if cancel_check is not None and cancel_check():
+            raise RuntimeError("Cancelled")
+        shutil.copy2(f, dest / f.name)
+        staged += 1
+        if on_progress is not None:
+            on_progress(i, total, f.name)
+
+    return staged
+
+
 def stage_erp_frames(
     source_dir,
     output_dir,
@@ -331,8 +384,17 @@ def stage_fisheye_frames(
     return len(manifest["pairs"])
 
 
-def relocate_erp_frames_to_colmap(source_dir, colmap_dir) -> tuple[int, bool]:
+def relocate_erp_frames_to_colmap(
+    source_dir, colmap_dir, keep_source: bool = False,
+) -> tuple[int, bool]:
     """Move a read-in-place ERP source folder's frames into ``<colmap_dir>/images``.
+
+    ``keep_source=True`` (cfg.keep_source_images, image-folder input only) COPIES
+    instead, leaving the user's folder exactly as it was. Same destination and
+    same filenames either way -- that invariant is why both variants live here
+    rather than being open-coded at the call site: transforms.json records
+    ``images/<name>`` and would break if the two disagreed. Returns
+    ``source_removed=False`` in keep mode, since nothing was removed.
 
     The ERP Native image-folder path lets COLMAP read the user's frames where
     they sit; only *after* COLMAP succeeds are the frames relocated here so the
@@ -353,8 +415,14 @@ def relocate_erp_frames_to_colmap(source_dir, colmap_dir) -> tuple[int, bool]:
     files, _warning = list_images_natural(source)
     moved = 0
     for f in files:
-        shutil.move(str(f), str(dest / f.name))
+        if keep_source:
+            shutil.copy2(str(f), str(dest / f.name))
+        else:
+            shutil.move(str(f), str(dest / f.name))
         moved += 1
+
+    if keep_source:
+        return moved, False
 
     source_removed = False
     try:

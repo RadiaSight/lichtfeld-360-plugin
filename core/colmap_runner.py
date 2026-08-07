@@ -44,6 +44,16 @@ _RE_PROCESSED_FILE = re.compile(r"Processed file \[(\d+)/(\d+)\]")
 _RE_IMAGE_NAME = re.compile(r"Name:\s+(\S+)")
 _RE_MATCHING_BLOCK = re.compile(r"Processing block \[(\d+)/(\d+),\s*(\d+)/(\d+)\]")
 _RE_MATCHING_IMAGE = re.compile(r"Processing image \[(\d+)/(\d+)\]")
+_RE_REG_FRAMES = re.compile(r"Registering image #\d+ \(num_reg_frames=(\d+)\)")
+
+_GLOMAP_PHASES = [
+    (re.compile(r"Rotation averaging done"),                         0.20, "Rotation averaging complete"),
+    (re.compile(r"Track establishment done|Established \d+ tracks"), 0.35, "Tracks established"),
+    (re.compile(r"Global positioning done"),                         0.55, "Global positioning complete"),
+    (re.compile(r"Iterative bundle adjustment done"),                0.90, "Bundle adjustment complete"),
+    (re.compile(r"Iterative retriangulation and refinement done"),   0.97, "Refinement complete"),
+]
+_RE_GLOMAP_BA_ITER = re.compile(r"Global bundle adjustment iteration (\d+) / (\d+)")
 
 _IMAGE_EXTENSIONS = frozenset((".jpg", ".jpeg", ".png"))
 MATCH_BUDGETS = {
@@ -202,6 +212,51 @@ def _collect_staged_image_names(images_dir: Path) -> list[str]:
         if path.suffix.lower() in _IMAGE_EXTENSIONS:
             names.append(path.relative_to(images_dir).as_posix())
     return sorted(names, key=os.path.normcase)
+
+
+def _resolve_total_frames(
+    database_frames: int,
+    staged_image_names: Iterable[str],
+    total_images: int,
+) -> int:
+    """Prefer the database frame count, then staged frame names, then images."""
+    if database_frames > 0:
+        return database_frames
+    distinct_frames = {
+        frame for _, frame in map(_split_image_name, staged_image_names) if frame
+    }
+    return len(distinct_frames) or total_images
+
+
+def _parse_mapping_progress(
+    line: str,
+    total_frames: int,
+) -> Optional[tuple[int, int, str]]:
+    """Parse incremental-mapper registered-frame progress."""
+    m = _RE_REG_FRAMES.search(line)
+    if m and total_frames > 0:
+        n = int(m.group(1))
+        return (n, total_frames, f"Mapping: {n}/{total_frames} frames registered")
+    return None
+
+
+def _parse_global_progress(
+    line: str,
+    glomap_reached: float,
+) -> Optional[tuple[int, int, str, float]]:
+    """Parse one GLOMAP line and apply the supplied progress high-water mark."""
+    frac = detail = None
+    for rx, checkpoint, label in _GLOMAP_PHASES:
+        if rx.search(line):
+            frac, detail = checkpoint, label
+    m = _RE_GLOMAP_BA_ITER.search(line)
+    if m:
+        i, n = int(m.group(1)), max(int(m.group(2)), 1)
+        frac, detail = 0.55 + (i / n) * (0.90 - 0.55), f"Global BA iteration {i}/{n}"
+    if frac is None:
+        return None
+    glomap_reached = max(glomap_reached, frac)
+    return (int(glomap_reached * 1000), 1000, detail, glomap_reached)
 
 
 # ── COLMAP 4.1 dispatch maps ─────────────────────────────────
@@ -543,6 +598,7 @@ class ColmapRunner:
         self._cancel_check = cancel_check
         self._active_proc = None
         self._rig_ids: set = set()  # populated by apply_rig_config in step 2
+        self._total_frames = 0
 
     def _progress(self, stage: str, percent: float, message: str) -> None:
         logger.info("[%s %.0f%%] %s", stage, percent * 100, message)
@@ -798,7 +854,7 @@ except Exception as exc:
             parsed = parse_fn(line)
             if parsed is not None:
                 cur, tot, detail = parsed
-                pct = cur / max(tot, 1)
+                pct = min(1.0, cur / max(tot, 1))
                 self._progress(stage, pct, detail)
 
         return new_pos
@@ -1036,14 +1092,17 @@ except Exception as exc:
 
                 rig_configs = pycolmap.read_rig_config(rig_config_path)
                 db = pycolmap.Database.open(database_path)
-                pycolmap.apply_rig_config(rig_configs, db)
+                try:
+                    pycolmap.apply_rig_config(rig_configs, db)
 
-                n_cams = db.num_cameras()
-                n_rigs = db.num_rigs()
-                n_frames = db.num_frames()
-                # Capture actual rig IDs for constant_rigs in mapping
-                self._rig_ids = {rig.rig_id for rig in db.read_all_rigs()}
-                db.close()
+                    n_cams = db.num_cameras()
+                    n_rigs = db.num_rigs()
+                    self._total_frames = db.num_frames()
+                    n_frames = self._total_frames
+                    # Capture actual rig IDs for constant_rigs in mapping
+                    self._rig_ids = {rig.rig_id for rig in db.read_all_rigs()}
+                finally:
+                    db.close()
 
                 _log(f"Step 2: Rig applied — cameras={n_cams}, rigs={n_rigs}, "
                      f"frames={n_frames}, rig_ids={self._rig_ids}")
@@ -1184,6 +1243,23 @@ except Exception as exc:
         del matching_opts
         _trim_process_memory()
 
+        if not self._total_frames:
+            db = None
+            try:
+                db = pycolmap.Database.open(database_path)
+                self._total_frames = db.num_frames()
+            except Exception as exc:
+                _log(f"Step 4: Database frame count unavailable ({exc})")
+            finally:
+                if db is not None:
+                    db.close()
+        staged_image_names: Iterable[str] = ()
+        if not self._total_frames:
+            staged_image_names = _collect_staged_image_names(self._images_dir)
+        total_frames = _resolve_total_frames(
+            self._total_frames, staged_image_names, total_images,
+        )
+
         # ================================================
         # STEP 4: RECONSTRUCTION (incremental or global)
         # ================================================
@@ -1192,17 +1268,19 @@ except Exception as exc:
         local_ba_opts, global_ba_opts = _configure_ba(self._config.ba_solver, self._config.camera_model)
         _log(f"Step 4: Mapping (mapper={mapper_name}, ba_solver={self._config.ba_solver})")
 
-        # Parse mapping progress from stderr (works for both incremental and global)
-        _RE_REGISTERING = re.compile(r"Registering image #(\d+)")
-
+        # Parse incremental-mapper registered-frame progress from stderr.
         def _parse_mapping(line: str) -> Optional[tuple[int, int, str]]:
-            m = _RE_REGISTERING.search(line)
-            if m and total_images > 0:
-                img_id = int(m.group(1))
-                # img_id is the COLMAP image ID, not a sequential count.
-                # Use it as a rough progress indicator.
-                return (img_id, total_images, f"Mapping: registering image #{img_id}")
-            return None
+            return _parse_mapping_progress(line, total_frames)
+
+        _glomap_reached = 0.0
+
+        def _parse_global(line: str) -> Optional[tuple[int, int, str]]:
+            nonlocal _glomap_reached
+            parsed = _parse_global_progress(line, _glomap_reached)
+            if parsed is None:
+                return None
+            current, total, detail, _glomap_reached = parsed
+            return (current, total, detail)
 
         if mapper_name == "global":
             # ── GLOMAP (global SfM) ──
@@ -1256,7 +1334,7 @@ except Exception as exc:
             )
             self._run_colmap_in_subprocess(
                 "mapping", "global_mapping", mapping_kwargs,
-                _parse_mapping, _log,
+                _parse_global, _log,
             )
         else:
             # ── Incremental mapping (default) ──

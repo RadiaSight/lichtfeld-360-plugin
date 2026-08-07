@@ -10,6 +10,7 @@ from pathlib import Path
 from .colmap_runner import ColmapConfig, ColmapRunner
 from .fisheye_reframer import FISHEYE_PINHOLE_PRESET
 from .frame_source import (
+    assert_source_outside_output,
     assert_source_reads_safe,
     graceful_delete_source,
     list_images_natural,
@@ -27,12 +28,20 @@ logger = logging.getLogger(__name__)
 _IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
-def _absorb_source(folder, output_root) -> None:
+def _absorb_source(folder, output_root, keep: bool = False) -> None:
     """Graceful-delete a source folder whose frames are preserved in the kept
     dataset. A kept folder (leftover sidecar/subdir, or the guard refusing a
     genuine self-deletion case) is a WARNING, never a run failure -- matching
     ERP Native's rmdir-warning precedent. The reconstruction is already
-    complete when this runs."""
+    complete when this runs.
+
+    ``keep=True`` (cfg.keep_source_images) skips the delete entirely: the frames
+    are already copied into the kept dataset, so absorbing is a disk-space
+    optimisation, not a correctness requirement -- and an image folder may be a
+    dataset the user still needs."""
+    if keep:
+        logger.info("Keeping source folder %s (keep_source_images)", folder)
+        return
     try:
         _removed, folder_removed = graceful_delete_source(folder, output_root)
     except ValueError as exc:
@@ -67,6 +76,55 @@ def _export_lens_mask_deliverable(
                 target = dest / f"{Path(orig).stem}.png"
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, target)
+            copied += 1
+    return copied
+
+
+def _stage_preexisting_lens_masks(
+    pairs, mask_root, staged_masks_root, *, two_folder: bool,
+) -> int:
+    """Stage the USER's lens masks into the staged-name layout COLMAP reads.
+
+    Inverse of ``_export_lens_mask_deliverable``: the mask folder mirrors the
+    image folder, so a two-folder source needs ``<mask_root>/front/`` +
+    ``<mask_root>/back/`` and a one-folder source needs a flat ``<mask_root>/``
+    holding the same front_/back_ names. Feeding this plugin's own kept
+    ``<output>/masks/`` deliverable back in therefore works unchanged.
+
+    Each mask is located by its frame's ORIGINAL stem and copied to that frame's
+    staged ``{i:06d}.png`` name, reusing the image ``pairs`` ordering rather than
+    re-pairing the mask files -- re-pairing could sort differently and offset
+    every mask by a frame. Raises ValueError naming the first frame with no
+    mask: COLMAP drops any image whose mask is missing, so a partial set would
+    quietly empty the reconstruction rather than degrade it.
+    """
+    root = Path(mask_root)
+    staged = Path(staged_masks_root)
+    copied = 0
+    for i, (front_path, back_path) in enumerate(pairs, start=1):
+        for lens, orig in (("front", front_path), ("back", back_path)):
+            folder = root / lens if two_folder else root
+            stem = Path(orig).stem
+            src = folder / f"{stem}.png"
+            if not src.is_file():
+                wrong_ext = sorted(
+                    p.name for p in folder.glob(f"{stem}.*")
+                    if p.suffix.lower() != ".png"
+                ) if folder.is_dir() else []
+                if wrong_ext:
+                    raise ValueError(
+                        f"Mask for {Path(orig).name} must be a PNG: found "
+                        f"{wrong_ext[0]} in {folder}. COLMAP only reads .png "
+                        "masks, so convert them and re-run."
+                    )
+                raise ValueError(
+                    f"No mask found for {Path(orig).name} (expected {src}). "
+                    "Every frame needs a matching PNG mask -- COLMAP drops any "
+                    "image whose mask is missing."
+                )
+            dest_dir = staged / lens
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest_dir / f"{i:06d}.png")
             copied += 1
     return copied
 
@@ -146,7 +204,7 @@ def run_image_folder_fisheye(cfg, update, cancel_check) -> dict:
     # circular import: pipeline imports this module via its thin wrapper.
     from .pipeline import resolve_image_folder_masking
 
-    resolve_image_folder_masking(cfg)
+    mask_source = resolve_image_folder_masking(cfg)
 
     from .fisheye_priors import infer_fisheye_camera_params
 
@@ -201,9 +259,38 @@ def run_image_folder_fisheye(cfg, update, cancel_check) -> dict:
         on_progress=_stage_progress,
     )
 
-    mask_enabled = cfg.enable_masking
     colmap_mask_path = None
-    if mask_enabled:
+    if mask_source == "preexisting":
+        # User-supplied lens masks: no SAM 3, no circle mask -- the user's masks
+        # are taken as final. They land in the same staged layout the generated
+        # ones use, so every downstream consumer (COLMAP, the propagation
+        # writer, the pinhole-track deliverable export) is unchanged.
+        update("masking", 20.0, "Staging pre-existing lens masks...")
+        assert_source_outside_output(cfg.preexisting_mask_dir, cfg.output_dir)
+        masks_dir = dataset_dir / "masks"
+        staged_masks = _stage_preexisting_lens_masks(
+            pairs,
+            cfg.preexisting_mask_dir,
+            masks_dir,
+            two_folder=bool(cfg.image_front_dir),
+        )
+        logger.info(
+            "Staged %d pre-existing lens masks from %s",
+            staged_masks, cfg.preexisting_mask_dir,
+        )
+        colmap_mask_path = masks_dir
+        if cancel_check():
+            return _result(
+                success=False,
+                dataset_path=delivered_path,
+                num_source_frames=num_pairs,
+                num_output_images=0,
+                num_registered_frames=0,
+                views_per_frame=0,
+                preset_signature="",
+                error="Cancelled",
+            )
+    elif cfg.enable_masking:
         update("masking", 20.0, "Initializing SAM 3 for fisheye masking...")
 
         import cv2
@@ -339,8 +426,12 @@ def run_image_folder_fisheye(cfg, update, cancel_check) -> dict:
         sift_domain_size_pooling=cfg.colmap_sift_affine_dsp,
     )
 
-    def _colmap_progress(_stage: str, pct: float, message: str) -> None:
-        update("colmap", 50.0 + pct * 40.0, message)
+    def _colmap_progress(stage: str, pct: float, message: str) -> None:
+        # Route through the shared sub-stage bands (lazy import: pipeline
+        # imports this module) so the monotonic display clamp does not freeze
+        # the bar at the features-band top through matching and mapping.
+        from .pipeline import _colmap_band
+        update("colmap", _colmap_band(stage, pct, 50.0, 90.0), message)
 
     update("colmap", 50.0, "Running COLMAP (OPENCV_FISHEYE, PER_FOLDER)...")
     runner = ColmapRunner(
@@ -400,7 +491,7 @@ def run_image_folder_fisheye(cfg, update, cancel_check) -> dict:
                 preset_signature="OPENCV_FISHEYE native",
                 error="Cancelled",
             )
-        _absorb_source(front_src, cfg.output_dir)
+        _absorb_source(front_src, cfg.output_dir, cfg.keep_source_images)
         if back_src != front_src:
             if cancel_check():
                 return _result(
@@ -414,7 +505,7 @@ def run_image_folder_fisheye(cfg, update, cancel_check) -> dict:
                     preset_signature="OPENCV_FISHEYE native",
                     error="Cancelled",
                 )
-            _absorb_source(back_src, cfg.output_dir)
+            _absorb_source(back_src, cfg.output_dir, cfg.keep_source_images)
             _remove_emptied_parent(front_src, back_src, cfg.output_dir)
         num_output_images = _count_images(images_root)
         views_per_frame = 2
@@ -448,7 +539,7 @@ def run_image_folder_fisheye(cfg, update, cancel_check) -> dict:
                 preset_signature="OPENCV_FISHEYE native + propagated pinhole",
                 error="Cancelled",
             )
-        _absorb_source(front_src, cfg.output_dir)
+        _absorb_source(front_src, cfg.output_dir, cfg.keep_source_images)
         if back_src != front_src:
             if cancel_check():
                 return _result(
@@ -464,7 +555,7 @@ def run_image_folder_fisheye(cfg, update, cancel_check) -> dict:
                     ),
                     error="Cancelled",
                 )
-            _absorb_source(back_src, cfg.output_dir)
+            _absorb_source(back_src, cfg.output_dir, cfg.keep_source_images)
             _remove_emptied_parent(front_src, back_src, cfg.output_dir)
         num_output_images = _count_images(images_root)
         views_per_frame = 2

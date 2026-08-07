@@ -31,7 +31,7 @@ The pipeline runs in six stages, each configurable from the plugin panel:
 | .INSV container | Insta360 cameras | Dual fisheye, camera family auto-detected |
 | Front + back .mp4 | Pre-split fisheye lens pair | Two-file mode for graded or externally processed footage |
 | Single-lens fisheye video | One fisheye lens, 1:1 frame (e.g. 3840×3840) | Fisheye → Video; solved as one OPENCV_FISHEYE camera, no rig. Non-square fisheye is planned |
-| Image folder | Already-extracted frames | Equirectangular, or dual fisheye (one folder or two); skips extraction |
+| Image folder | Already-extracted frames | Equirectangular, dual fisheye (one folder or two), or single-lens fisheye; skips extraction |
 
 ### Select Image Folder
 
@@ -40,7 +40,9 @@ frames you already have. Pick your projection first (**Equirectangular** or
 **Fisheye**), then click **Image Folder**:
 
 - **Equirectangular**: one folder of 360 frames.
-- **Fisheye**: a dual-lens set, as either **One** folder (files named
+- **Fisheye** asks two things: **Lenses** (**Dual** or **Single**), and — for
+  Dual only — **Structure**, where those two lenses' files live.
+- **Fisheye → Lenses: Dual**: as either **One** folder (files named
   `front...` and `back...` so each pair matches, e.g. `front_0001.jpg` and
   `back_0001.jpg`) or **Two** folders (front and back). Pick the **Camera**
   family so calibration matches. Staged pairs are renamed to matched index
@@ -49,10 +51,38 @@ frames you already have. Pick your projection first (**Equirectangular** or
   native dataset's `paired_extraction_manifest.json` (beside its `images/`
   folder, i.e. in `colmap/` or `colmap/native/`) maps every staged name back
   to your original file.
+- **Fisheye → Lenses: Single**: one folder from a single lens, any filenames. No
+  pairing, no rig, no camera family needed -- each frame is solved on its own
+  with `OPENCV_FISHEYE`, the same path a single-lens fisheye video takes. Use
+  this when you only have (or only want) one lens.
 
-**Masks**: **Generate with SAM 3**, **Use pre-existing masks** (available for
-Equirectangular + Pinhole output; point at a folder of masks named to match
-your frames), or **None**.
+**Keep source images.** On **Native** and **Both** output, an image folder is
+normally consumed into the dataset to save disk: dual-lens Fisheye copies the
+frames in and then deletes the source folder, and Equirectangular Native moves
+the frames out and removes the emptied folder. Either way your folder is gone.
+**Keep source images** is on by default, so this never happens to a folder you
+still need -- uncheck it only when you want the space back. The checkbox appears
+only where it applies; the Pinhole training output and direct Pinhole never
+touch your source, and Fisheye **Lenses: Single** always copies.
+
+**Masks**: **Generate with SAM 3**, **Use pre-existing masks**, or **None**.
+Pre-existing masks work for every image folder and every Output Mode. They must
+be PNG, and every frame needs one -- COLMAP drops any image whose mask is
+missing, so a partial set is rejected before the run starts. The mask folder
+mirrors the frames you supplied:
+
+- **Equirectangular**: one folder of masks named to match your frames.
+- **Fisheye, Dual / One folder**: one folder of masks using the same `front_`/`back_`
+  names as your frames.
+- **Fisheye, Dual / Front + back**: a folder holding `front/` and `back/` subfolders,
+  each named to match the frames in the matching lens folder.
+- **Fisheye, Single**: one folder of masks named to match your frames.
+
+That is the same layout the plugin writes to `<output>/masks/`, so masks kept
+from an earlier run can be fed straight back in. A previous run's
+`colmap/native/` is itself a valid input: point **Front + back** at its
+`images/front` and `images/back` with the mask folder set to its `masks/`, or
+set **Lenses: Single** and point it at `images/front` with `masks/front`.
 
 **Training output** (shown for **Native**, both projections): **Native**,
 **Pinhole**, or **Both**. **Pinhole** and **Both** derive the pinhole crops from

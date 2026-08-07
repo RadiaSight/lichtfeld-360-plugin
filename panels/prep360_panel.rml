@@ -116,6 +116,17 @@
           </div>
         </div>
         <div class="setting-row" data-if="show_image_fisheye_controls">
+          <span class="prop-label">Lenses</span>
+          <div class="path-browse-row">
+            <button class="btn btn--secondary btn--compact btn--toggle"
+                    data-class-is-active="lenses_is_single"
+                    data-event-click="set_lenses_single">Single</button>
+            <button class="btn btn--secondary btn--compact btn--toggle"
+                    data-class-is-active="lenses_is_dual"
+                    data-event-click="set_lenses_dual">Dual</button>
+          </div>
+        </div>
+        <div class="setting-row" data-if="show_fisheye_structure">
           <span class="prop-label">Structure</span>
           <div class="path-browse-row">
             <button class="btn btn--secondary btn--compact btn--toggle"
@@ -125,6 +136,18 @@
                     data-class-is-active="folder_mode_is_two"
                     data-event-click="set_folder_mode_two">Front + back</button>
           </div>
+        </div>
+        <div class="setting-row" data-if="show_image_fisheye_single">
+          <span class="prop-label">Fisheye frames</span>
+          <div class="path-browse-row">
+            <div class="path-box path-box--small">{{fisheye_dir_text}}</div>
+            <button class="btn btn--secondary btn--compact" data-event-click="select_fisheye_dir">Choose</button>
+            <button class="btn btn--secondary btn--compact" data-event-click="clear_fisheye_dir">Clear</button>
+          </div>
+        </div>
+        <div class="setting-row" data-if="show_image_fisheye_single">
+          <span class="prop-label"></span>
+          <span class="status-text status-muted">One lens only, any filenames. No pairing and no rig - each frame is solved on its own.</span>
         </div>
         <div class="setting-row" data-if="show_image_fisheye_one">
           <span class="prop-label">Fisheye frames</span>
@@ -172,13 +195,6 @@
             <option value="2">None</option>
           </select>
         </div>
-        <div class="setting-row setting-row--dropdown setting-row--dropdown-medium" data-if="show_masks_generate_none">
-          <span class="prop-label">Masks</span>
-          <select data-value="mask_source_idx">
-            <option value="0" selected>Generate with SAM 3</option>
-            <option value="2">None</option>
-          </select>
-        </div>
         <div class="setting-row" data-if="show_preexisting_mask_picker">
           <span class="prop-label">Masks folder</span>
           <div class="path-browse-row">
@@ -186,6 +202,10 @@
             <button class="btn btn--secondary btn--compact" data-event-click="select_preexisting_mask_dir">Choose</button>
             <button class="btn btn--secondary btn--compact" data-event-click="clear_preexisting_mask_dir">Clear</button>
           </div>
+        </div>
+        <div class="setting-row" data-if="show_preexisting_mask_picker">
+          <span class="prop-label"></span>
+          <span class="status-text status-muted">{{preexisting_mask_layout_hint}}</span>
         </div>
       </div>
 
@@ -250,6 +270,15 @@
           </div>
         </span>
       </div>
+      <div class="setting-row" data-if="show_keep_source_images">
+        <span class="prop-label"></span>
+        <span class="status-text status-muted">
+          <div class="loop-closure-group">
+            <input type="checkbox" data-checked="keep_source_images" id="keep_source_images_cb"/>
+            <label class="checkbox-label" for="keep_source_images_cb">Keep source images (uncheck to absorb them into the dataset)</label>
+          </div>
+        </span>
+      </div>
       <div class="setting-row">
         <span class="prop-label">Summary</span>
         <span class="status-text status-muted">{{dataset_summary_text}}</span>
@@ -296,7 +325,7 @@
       </div>
       <div class="setting-row setting-row--dropdown setting-row--dropdown-high" data-class-row-disabled="extract_controls_disabled">
         <span class="prop-label">Sharpness</span>
-        <select data-value="extract_sharpness_idx" data-attr-disabled="extract_controls_disabled">
+        <select data-value="extract_sharpness_idx" data-attrif-disabled="extract_controls_disabled">
           <option value="0">None</option>
           <option value="1">Basic</option>
           <option value="2">Better</option>
@@ -305,7 +334,7 @@
       </div>
       <div class="setting-row setting-row--dropdown" data-class-row-disabled="extract_controls_disabled">
         <span class="prop-label">Blur Metric</span>
-        <select data-value="blur_metric_idx" data-attr-disabled="extract_controls_disabled">
+        <select data-value="blur_metric_idx" data-attrif-disabled="extract_controls_disabled">
           <option value="0">Tenengrad</option>
           <option value="1">Laplacian</option>
         </select>
@@ -486,7 +515,7 @@
         <span class="prop-label">Total Output</span>
         <span class="status-text status-muted">{{total_output_text}}</span>
         <div class="loop-closure-group" data-class-row-disabled="loop_closure_disabled">
-          <input type="checkbox" data-checked="loop_closure_enabled" id="loop_closure_cb" data-attr-disabled="loop_closure_disabled"/>
+          <input type="checkbox" data-checked="loop_closure_enabled" id="loop_closure_cb" data-attrif-disabled="loop_closure_disabled"/>
           <label class="checkbox-label" for="loop_closure_cb">Loop closure</label>
         </div>
       </div>
