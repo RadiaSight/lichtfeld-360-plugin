@@ -54,6 +54,7 @@ _GLOMAP_PHASES = [
     (re.compile(r"Iterative retriangulation and refinement done"),   0.97, "Refinement complete"),
 ]
 _RE_GLOMAP_BA_ITER = re.compile(r"Global bundle adjustment iteration (\d+) / (\d+)")
+_RE_GLOG_ERROR = re.compile(r"^[EF]\d{8} ")
 
 _IMAGE_EXTENSIONS = frozenset((".jpg", ".jpeg", ".png"))
 MATCH_BUDGETS = {
@@ -813,10 +814,16 @@ except Exception as exc:
                 pass
             detail = f"subprocess exited with code {proc.returncode}"
             if stderr_content.strip():
-                last_lines = stderr_content.strip().splitlines()[-10:]
+                all_lines = stderr_content.strip().splitlines()
+                last_lines = all_lines[-10:]
                 for line in last_lines:
                     _log(f"  stderr: {line}")
-                detail += f"\nLast stderr: {last_lines[-1]}"
+                # A crash's stack trace ends the output; the cause is the
+                # first glog error/fatal line, not the last line.
+                error_line = next(
+                    (l for l in all_lines if _RE_GLOG_ERROR.match(l)),
+                    last_lines[-1])
+                detail += f"\nLast stderr: {error_line}"
             raise RuntimeError(f"COLMAP {fn_name} failed: {detail}")
 
         # Clean up temp files on success
@@ -917,6 +924,10 @@ except Exception as exc:
             )
         if needed:
             _log(f"Pre-flight: ONNX models verified for {ft}+{mt}: {needed}")
+            # The CUDA pycolmap wheel omits the ONNX Runtime provider DLLs;
+            # any ONNX session aborts the subprocess without them (issue #11).
+            from .ort_provider_repair import ensure_provider_dlls
+            ensure_provider_dlls(on_output=_log)
 
     def _run_pipeline(self, pycolmap, t0: float) -> ColmapResult:
         debug_log = self._output_dir / "colmap_debug.log"

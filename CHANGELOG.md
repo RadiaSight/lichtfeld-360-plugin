@@ -11,7 +11,9 @@ fixes only. Each release notes the LichtFeld Studio version it was tested
 against; the minimum host is declared in `pyproject.toml`
 (`lichtfeld_version`).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-19
+
+Tested against LichtFeld Studio v0.5.3-266-gbf4ff97b0 (bf4ff97b0).
 
 ### Added
 - **Use an existing SAM 3 weights file (issue #10).** The masking setup now
@@ -33,6 +35,18 @@ against; the minimum host is declared in `pyproject.toml`
   note now says plainly that nothing will be downloaded.
 - Panel row visibility no longer depends on the exact prose of a setup
   message (a copy edit in `setup_checks` could previously blank a row).
+- **ALIKED and LightGlue no longer crash COLMAP (issue #11).** The CUDA
+  pycolmap wheel omits the two ONNX Runtime provider DLLs it loads at
+  runtime, so any ALIKED extraction or ONNX matching aborted with
+  "subprocess exited with code 3" regardless of output mode or GPU/CPU
+  setting. The pipeline pre-flight now downloads the two matching DLLs
+  (one-time, ~262 MB, from the same COLMAP build's binary release) into
+  the installed package on the first ALIKED/LightGlue run, with progress
+  in the run log and a manual-fix pointer if the download fails.
+- Crash failure reports now quote the first error line from COLMAP's
+  output instead of the last line, which for a crash was always a
+  meaningless stack-trace frame (`RtlUserThreadStart`) with the actual
+  cause buried above it.
 
 ## [0.4.0] - 2026-08-07
 

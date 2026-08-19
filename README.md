@@ -426,6 +426,9 @@ Installed automatically unless noted:
 - **SAM 3** — optional, gated HuggingFace model. Installed from inside the plugin after access verification.
 
 ONNX model files for ALIKED, LightGlue, and Bruteforce matching are bundled in `lib/`.
+The first run that uses ALIKED or LightGlue also downloads two ONNX Runtime
+DLLs (~262 MB, one-time) that the Windows pycolmap wheel is missing; without
+them COLMAP would crash (issue #11).
 
 ### GPU Extraction (optional)
 
