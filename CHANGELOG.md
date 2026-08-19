@@ -13,6 +13,27 @@ against; the minimum host is declared in `pyproject.toml`
 
 ## [Unreleased]
 
+### Added
+- **Use an existing SAM 3 weights file (issue #10).** The masking setup now
+  offers two routes side by side: the HuggingFace download, or **This PC →
+  Browse...** to point at a `sam3.pt` already on disk (no account or token
+  needed). The chosen path is validated at pick time (name + size, with the
+  real size quoted back on a wrong file), remembered across sessions, and an
+  explicitly chosen file always wins over the HuggingFace cache — including
+  when the file goes missing (unplugged drive), which pauses masking with a
+  clear fix-it path instead of silently falling back. A **Weights from** row
+  shows which source is in use, and the panel names the download destination
+  before any download starts.
+
+### Fixed
+- The weights-ready guidance no longer tells you to click a button that is
+  not on screen: the message now names the actual button (**Download
+  Weights** or **Install SAM 3** by state), the setup intro names both
+  weight routes instead of ending at a hover hint, and the cached-weights
+  note now says plainly that nothing will be downloaded.
+- Panel row visibility no longer depends on the exact prose of a setup
+  message (a copy edit in `setup_checks` could previously blank a row).
+
 ## [0.4.0] - 2026-08-07
 
 Tested against LichtFeld Studio v0.5.3-201-gcc6c552d (cc6c552d).

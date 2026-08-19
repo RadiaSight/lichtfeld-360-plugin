@@ -226,12 +226,18 @@ The masking system uses Meta's SAM 3 (Segment Anything Model 3) with text-prompt
 
 ### SAM 3 Setup
 
-SAM 3 is a gated HuggingFace model. First-time setup is guided from inside the plugin:
+SAM 3 is a gated HuggingFace model. The runtime is already installed with the plugin — setup only provides the model weights, and there are two ways to do that:
+
+**Download from HuggingFace** (guided from inside the plugin):
 
 1. Request access to `facebook/sam3` on HuggingFace
 2. Create a HuggingFace token with `Read` access
 3. Paste the token into the plugin and click **Verify Access**
-4. Click **Install SAM 3**
+4. Click **Download Weights**
+
+The panel shows where the weights will be saved before the download starts. The destination is the HuggingFace cache; to store it somewhere else, set `HF_HOME` before starting LichtFeld Studio. If the weights are already in your cache from earlier use, the plugin finds them and nothing is downloaded.
+
+**Use a copy already on this PC**: under **This PC**, click **Browse...** and select your `sam3.pt` (a copy inside another HuggingFace cache folder works too). No account or token is needed for this route. SAM 3 is licensed by Meta — supplying your own copy assumes you accepted its terms on HuggingFace. The chosen path is remembered across sessions, an explicitly chosen file always wins over the cache, and the panel's **Weights from** row shows which source is in use. If the file later goes missing (an unplugged drive, a moved folder), masking pauses until you pick it again or click **Clear**.
 
 Access verification is cached to disk so it persists across sessions.
 

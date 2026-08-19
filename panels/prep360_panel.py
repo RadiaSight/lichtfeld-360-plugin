@@ -33,6 +33,7 @@ from ..core.setup_checks import (
     MaskingSetupState, Sam3SetupReport, check_masking_setup, check_sam3_setup,
     forget_hf_token, install_default_tier, install_premium_tier, install_video_tracking,
     make_sam3_install_failure_report, verify_hf_token_detailed,
+    set_local_checkpoint, clear_local_checkpoint,
 )
 from ..core.output_mode import OUTPUT_MODES, output_mode_index
 from ..core.presets import DEFAULT_PRESET, VIEW_PRESETS, resolve_view_preset_name
@@ -387,6 +388,7 @@ class Plugin360Panel(lf.ui.Panel):
         self._sam3_edit_token: bool = False
         self._sam3_notice_text: str = ""
         self._sam3_hf_help_key: str = ""
+        self._sam3_local_reject: str = ""
 
         # Reframe
         self._preset_idx: int = PRESET_NAMES.index(DEFAULT_PRESET)
@@ -564,6 +566,30 @@ class Plugin360Panel(lf.ui.Panel):
         model.bind_func("sam3_access_status_text", lambda: self._format_sam3_status(self._sam3_setup_report.access_status))
         model.bind_func("sam3_runtime_status_text", lambda: self._format_sam3_status(self._sam3_setup_report.runtime_status))
         model.bind_func("sam3_weights_status_text", self._get_sam3_weights_status_text)
+        for _row, _status_attr, _hf_row in (
+            ("token", "token_status", True),
+            ("access", "access_status", True),
+            ("runtime", "runtime_status", False),
+            ("weights", "weights_status", False),
+        ):
+            for _tone in ("good", "bad", "muted"):
+                model.bind_func(
+                    f"sam3_{_row}_{_tone}",
+                    lambda a=_status_attr, t=_tone, h=_hf_row: self._sam3_row_tone(
+                        getattr(self._sam3_setup_report, a), h
+                    ) == t,
+                )
+        model.bind_func("sam3_local_path", lambda: self._setup_state.local_checkpoint_path)
+        model.bind_func("show_sam3_local_picked", lambda: self._setup_state.local_checkpoint_ok)
+        model.bind_func("show_sam3_local_stale", self._sam3_local_stale)
+        model.bind_func("show_sam3_local_reject", lambda: bool(self._sam3_local_reject))
+        model.bind_func("sam3_local_reject_text", lambda: self._sam3_local_reject)
+        model.bind_func("sam3_weights_from_text", self._get_sam3_weights_from_text)
+        # Provenance row only for a deliberately chosen file — the cache is
+        # the default source and announcing it every session is noise.
+        model.bind_func("show_sam3_weights_from", lambda: self._setup_state.weights_source == "local")
+        model.bind_func("sam3_download_destination_text", self._get_sam3_download_destination_text)
+        model.bind_func("show_sam3_download_destination", self._show_sam3_download_destination)
         model.bind_func("show_sam3_cached_weights_note", self._show_sam3_cached_weights_note)
         model.bind_func("sam3_cached_weights_note_text", self._get_sam3_cached_weights_note_text)
         model.bind_func("sam3_check_button_text", lambda: self._sam3_check_button_text)
@@ -913,6 +939,8 @@ class Plugin360Panel(lf.ui.Panel):
         model.bind_event("forget_hf_token", self._on_forget_hf_token)
         model.bind_event("set_sam3_hf_help", self._on_set_sam3_hf_help)
         model.bind_event("clear_sam3_hf_help", self._on_clear_sam3_hf_help)
+        model.bind_event("browse_sam3_checkpoint", self._on_browse_sam3_checkpoint)
+        model.bind_event("clear_sam3_checkpoint", self._on_clear_sam3_checkpoint)
         # GPU extraction opt-in events
         model.bind_event("gpu_primary_action", self._on_gpu_primary_action)
         model.bind_event("gpu_copy_details", self._on_gpu_copy_details)
@@ -995,6 +1023,9 @@ class Plugin360Panel(lf.ui.Panel):
             self._sam3_check_button_text,
             self._sam3_notice_text,
             self._sam3_hf_help_key,
+            self._sam3_local_reject,
+            self._setup_state.local_checkpoint_path,
+            self._setup_state.local_checkpoint_ok,
             (
                 self._sam3_setup_report.token_status,
                 self._sam3_setup_report.access_status,
@@ -1151,12 +1182,12 @@ class Plugin360Panel(lf.ui.Panel):
             return "This plugin uses SAM 3 for masking."
         return (
             "This plugin uses SAM 3 for masking. SAM 3 is a gated model that requires "
-            "approval before downloading, and setup requires a user token. Hover over "
-            "the HuggingFace buttons for details."
+            "approval before downloading, and setup may require a user token. Download "
+            "the weights from HuggingFace or point to a copy already on this PC."
         )
 
     def _get_sam3_support_text(self) -> str:
-        return "This plugin will function without masking enabled."
+        return "The plugin will function without masking enabled."
 
     def _show_sam3_support_text(self) -> bool:
         return not (
@@ -1164,6 +1195,11 @@ class Plugin360Panel(lf.ui.Panel):
         )
 
     def _get_sam3_status_message(self) -> str:
+        if (
+            self._setup_state.local_checkpoint_path
+            and not self._setup_state.local_checkpoint_ok
+        ):
+            return ""
         if (
             self._sam3_setup_report.overall_stage == "needs_token"
             and self._sam3_setup_report.token_status == "missing"
@@ -1173,7 +1209,10 @@ class Plugin360Panel(lf.ui.Panel):
             self._sam3_setup_report.access_status == "granted"
             and self._sam3_setup_report.overall_stage in {"ready_to_install", "needs_weights"}
         ):
-            return "SAM 3 access is approved. Click 'Install SAM 3' to add the model."
+            return (
+                "SAM 3 access is approved. Click '%s' to add the model."
+                % self._get_sam3_install_button_text()
+            )
         return self._sam3_setup_report.message
 
     def _get_sam3_hf_help_text(self) -> str:
@@ -1204,10 +1243,63 @@ class Plugin360Panel(lf.ui.Panel):
         return (
             self._sam3_setup_report.weights_status == "present"
             and self._sam3_setup_report.access_status != "granted"
+            and self._setup_state.weights_source == "cache"
         )
 
     def _get_sam3_cached_weights_note_text(self) -> str:
-        return "SAM 3 files are already cached on this machine from an earlier setup."
+        return (
+            "SAM 3 weights are already cached on this machine, so there is nothing "
+            "to download. The plugin will use the copy in your HuggingFace cache."
+        )
+
+    @staticmethod
+    def _sam3_status_tone(status: str) -> str:
+        """Tone bucket for a setup status value: good, bad, or muted."""
+        if status in {"verified", "granted", "installed", "present"}:
+            return "good"
+        if status in {"missing", "invalid", "broken", "failed"}:
+            return "bad"
+        return "muted"
+
+    def _sam3_local_saved(self) -> bool:
+        return bool(self._setup_state.local_checkpoint_path)
+
+    def _sam3_local_stale(self) -> bool:
+        return (
+            bool(self._setup_state.local_checkpoint_path)
+            and not self._setup_state.local_checkpoint_ok
+        )
+
+    def _sam3_row_tone(self, status: str, hf_row: bool) -> str:
+        """Tone for one status row; HF rows vanish once a local file is saved."""
+        if hf_row and self._sam3_local_saved():
+            return "hidden"
+        return self._sam3_status_tone(status)
+
+    def _get_sam3_weights_from_text(self) -> str:
+        source = self._setup_state.weights_source
+        if source == "local":
+            return "Your file"
+        if source == "cache":
+            return "HuggingFace cache"
+        return ""
+
+    def _get_sam3_download_destination_text(self) -> str:
+        try:
+            from huggingface_hub import constants as hf_constants
+            return "The weights will be saved to %s." % hf_constants.HF_HUB_CACHE
+        except Exception:
+            return ""
+
+    def _show_sam3_download_destination(self) -> bool:
+        if self._sam3_local_saved():
+            return False
+        if not self._get_sam3_download_destination_text():
+            return False
+        return self._sam3_setup_report.overall_stage in {
+            "ready_to_install",
+            "needs_weights",
+        }
 
     def _get_sam3_install_button_text(self) -> str:
         if self._install_busy:
@@ -1229,6 +1321,11 @@ class Plugin360Panel(lf.ui.Panel):
         }
 
     def _show_sam3_install_button(self) -> bool:
+        if (
+            self._setup_state.local_checkpoint_path
+            and not self._setup_state.local_checkpoint_ok
+        ):
+            return False
         return self._sam3_setup_report.overall_stage in {
             "ready_to_install",
             "needs_weights",
@@ -1301,7 +1398,14 @@ class Plugin360Panel(lf.ui.Panel):
     def _show_hf_verify_text(self) -> bool:
         if not self._hf_verify_text:
             return False
-        return self._hf_verify_text != "SAM 3 setup needs a HuggingFace token."
+        # Hide only the pristine needs-token prompt (the UI around it already
+        # says this); compare against the report's own message so visibility
+        # never depends on the exact prose in setup_checks.
+        return not (
+            self._sam3_setup_report.overall_stage == "needs_token"
+            and self._sam3_setup_report.token_status == "missing"
+            and self._hf_verify_text == self._sam3_setup_report.message
+        )
 
     def _show_sam3_token_editor_message(self) -> bool:
         return self._show_sam3_token_editor() and self._show_hf_verify_text()
@@ -2060,6 +2164,39 @@ class Plugin360Panel(lf.ui.Panel):
                 self._handle.dirty_all()
 
         threading.Thread(target=_check, daemon=True).start()
+
+    def _on_browse_sam3_checkpoint(self, handle, event, args):
+        del handle, event, args
+        if self._install_busy:
+            return
+        try:
+            path = _open_file_via_win32(
+                "Select SAM 3 Weights",
+                [("SAM 3 weights", "*.pt"), ("All files", "*.*")],
+            )
+        except OSError:
+            logger.warning("SAM 3 weights browse requires Windows")
+            return
+        if not path:
+            return  # dialog cancelled: change nothing
+        ok, msg = set_local_checkpoint(path)
+        if not ok:
+            self._sam3_local_reject = msg
+            return
+        self._sam3_local_reject = ""
+        self._setup_state = check_masking_setup()
+        self._sam3_setup_report = check_sam3_setup(setup_state=self._setup_state)
+        self._refresh_masking_availability()
+
+    def _on_clear_sam3_checkpoint(self, handle, event, args):
+        del handle, event, args
+        if self._install_busy:
+            return
+        clear_local_checkpoint()
+        self._sam3_local_reject = ""
+        self._setup_state = check_masking_setup()
+        self._sam3_setup_report = check_sam3_setup(setup_state=self._setup_state)
+        self._refresh_masking_availability()
 
     def _on_toggle_sam3_token_editor(self, handle, event, args):
         del handle, event, args

@@ -15,6 +15,7 @@ SAM3_MODEL_ID = "facebook/sam3"
 
 _hf_access_cache: bool | None = None
 _HF_ACCESS_CACHE_FILE = Path(__file__).resolve().parent.parent / ".hf_access_verified"
+_LOCAL_CKPT_FILE = Path(__file__).resolve().parent.parent / ".sam3_local_checkpoint"
 
 
 @dataclass
@@ -34,6 +35,9 @@ class MaskingSetupState:
     has_access: bool = False
     has_sam3: bool = False
     has_weights: bool = False
+    has_cache_weights: bool = False
+    local_checkpoint_path: str = ""
+    local_checkpoint_ok: bool = False
 
     # SAM 3.1 video tracking (future)
     has_sam3_video: bool = False
@@ -68,6 +72,21 @@ class MaskingSetupState:
     def sam3_ready(self) -> bool:
         """SAM 3 cubemap masking requires only torch + sam3 + weights."""
         return self.has_torch and self.has_sam3 and self.has_weights
+
+    @property
+    def weights_source(self) -> str:
+        """Where SAM 3 weights come from: "local", "cache", or "".
+
+        A saved-but-missing local path returns "" — the stale choice blocks
+        the cache rather than silently falling back to it.
+        """
+        if self.local_checkpoint_ok:
+            return "local"
+        if self.local_checkpoint_path:
+            return ""
+        if self.has_cache_weights:
+            return "cache"
+        return ""
 
     @property
     def masking_ready(self) -> bool:
@@ -275,6 +294,29 @@ def _build_sam3_setup_report(
             detail=detail,
         )
 
+    if state.local_checkpoint_ok:
+        if runtime_status == "installed":
+            return Sam3SetupReport(
+                token_status=token_status,
+                access_status=access_status,
+                runtime_status=runtime_status,
+                weights_status="present",
+                overall_stage="ready",
+                message="SAM 3 is ready to use.",
+                next_action="Enable masking to use SAM 3 Cubemap.",
+                detail=detail,
+            )
+        return Sam3SetupReport(
+            token_status=token_status,
+            access_status=access_status,
+            runtime_status=runtime_status,
+            weights_status="present",
+            overall_stage="error",
+            message="SAM 3 runtime is not available.",
+            next_action="Restart LichtFeld Studio, then click Re-check Setup.",
+            detail=detail,
+        )
+
     if token_status == "missing":
         return Sam3SetupReport(
             token_status=token_status,
@@ -413,6 +455,13 @@ def check_sam3_setup(
 def check_masking_setup() -> MaskingSetupState:
     """Check all masking setup conditions. Returns current state."""
     torch_ok = _check_torch_installed()
+    cache_weights = _check_weights_downloaded()
+    ckpt_status = local_checkpoint_status()
+    local_ok = ckpt_status == "ok"
+    if ckpt_status == "missing":
+        weights_ok = False
+    else:
+        weights_ok = cache_weights or local_ok
     return MaskingSetupState(
         has_torch=torch_ok,
         has_yolo=_check_yolo_installed(),
@@ -421,7 +470,10 @@ def check_masking_setup() -> MaskingSetupState:
         has_token=_check_hf_token(),
         has_access=_check_hf_access(),
         has_sam3=_check_sam3_installed(),
-        has_weights=_check_weights_downloaded(),
+        has_weights=weights_ok,
+        has_cache_weights=cache_weights,
+        local_checkpoint_path=get_local_checkpoint() or "",
+        local_checkpoint_ok=local_ok,
         has_sam3_video=_check_sam3_video_installed(),
     )
 
@@ -442,10 +494,15 @@ def is_operator_masking_ready() -> bool:
 def is_sam3_masking_ready() -> bool:
     """Fast runtime check for SAM 3 cubemap masking readiness.
 
-    SAM 3 cubemap masking requires only torch + sam3 + weights.
+    SAM 3 cubemap masking requires only torch + sam3 + weights. A saved-but-missing local weights file blocks readiness.
     Does NOT require SAM v2, YOLO, or SAM v1.
     """
-    return _check_torch_installed() and _check_sam3_installed() and _check_weights_downloaded()
+    ckpt_status = local_checkpoint_status()
+    if ckpt_status == "missing":
+        return False
+    if not (_check_torch_installed() and _check_sam3_installed()):
+        return False
+    return _check_weights_downloaded() or ckpt_status == "ok"
 
 
 def verify_hf_token(token: str) -> bool:
@@ -524,6 +581,62 @@ def forget_hf_token() -> bool:
     except Exception as exc:
         logger.warning("Could not forget saved HuggingFace token: %s", exc)
         return False
+
+
+def get_local_checkpoint() -> str | None:
+    """Return the saved local SAM 3 checkpoint path, or None if not set."""
+    try:
+        text = _LOCAL_CKPT_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
+def local_checkpoint_status() -> str:
+    """Local checkpoint state: "none" (not set), "ok", or "missing" (stale path)."""
+    path = get_local_checkpoint()
+    if path is None:
+        return "none"
+    import os
+    return "ok" if os.path.isfile(path) else "missing"
+
+
+def _human_file_size(num_bytes: int) -> str:
+    """Format a byte count the way the panel quotes it (1024 base)."""
+    if num_bytes >= 1024 ** 3:
+        return "%.1f GB" % (num_bytes / 1024 ** 3)
+    if num_bytes >= 1024 ** 2:
+        return "%.0f MB" % (num_bytes / 1024 ** 2)
+    return "%.0f KB" % (num_bytes / 1024)
+
+
+def set_local_checkpoint(path: str) -> tuple[bool, str]:
+    """Validate and persist a user-chosen SAM 3 weights file.
+
+    Cheap pick-time checks only (name + size); deeper failures surface at
+    first model load. Returns (ok, user-facing rejection message).
+    """
+    import os
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False, "Could not read that file."
+    if not path.lower().endswith(".pt") or size < 1_000_000_000:
+        return False, (
+            "That file is %s. The SAM 3 weights file is named sam3.pt and is "
+            "about 3.3 GB, so this does not look like the right file."
+            % _human_file_size(size)
+        )
+    try:
+        _LOCAL_CKPT_FILE.write_text(os.path.abspath(path), encoding="utf-8")
+    except OSError:
+        return False, "Could not save the selected path."
+    return True, ""
+
+
+def clear_local_checkpoint() -> None:
+    """Remove the saved local checkpoint path."""
+    _LOCAL_CKPT_FILE.unlink(missing_ok=True)
 
 
 def make_sam3_install_failure_report(

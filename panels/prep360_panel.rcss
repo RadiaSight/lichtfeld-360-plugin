@@ -526,3 +526,24 @@ body {
     flex: 1;
     font-weight: bold;
 }
+
+/* SAM 3 gateway — settled styling (docs/sam3-setup-gateway-board.html) */
+.masking-status-row .prop-label {
+    color: #d7dde5;
+}
+.status-good {
+    color: #4CAF50;
+}
+.status-bad {
+    color: #d98a94;
+}
+.sam3-local-path {
+    color: #d7dde5;
+    background-color: #14141f;
+    border-width: 1dp;
+    border-color: #363c48;
+    padding: 3dp 6dp;
+}
+.sam3-local-path--stale {
+    text-decoration: line-through;
+}

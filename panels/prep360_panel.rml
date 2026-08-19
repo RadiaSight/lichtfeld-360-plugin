@@ -367,19 +367,51 @@
         <div class="setting-row" data-if="show_sam3_notice">
           <span class="status-text status-muted">{{sam3_notice_text}}</span>
         </div>
-        <div class="setting-row masking-status-row">
+        <div class="setting-row masking-status-row" data-if="sam3_token_good">
+          <span class="prop-label">Token</span>
+          <span class="status-text status-good">{{sam3_token_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_token_bad">
+          <span class="prop-label">Token</span>
+          <span class="status-text status-bad">{{sam3_token_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_token_muted">
           <span class="prop-label">Token</span>
           <span class="status-text status-muted">{{sam3_token_status_text}}</span>
         </div>
-        <div class="setting-row masking-status-row">
+        <div class="setting-row masking-status-row" data-if="sam3_access_good">
+          <span class="prop-label">Access</span>
+          <span class="status-text status-good">{{sam3_access_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_access_bad">
+          <span class="prop-label">Access</span>
+          <span class="status-text status-bad">{{sam3_access_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_access_muted">
           <span class="prop-label">Access</span>
           <span class="status-text status-muted">{{sam3_access_status_text}}</span>
         </div>
-        <div class="setting-row masking-status-row">
+        <div class="setting-row masking-status-row" data-if="sam3_runtime_good">
+          <span class="prop-label">Runtime</span>
+          <span class="status-text status-good">{{sam3_runtime_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_runtime_bad">
+          <span class="prop-label">Runtime</span>
+          <span class="status-text status-bad">{{sam3_runtime_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_runtime_muted">
           <span class="prop-label">Runtime</span>
           <span class="status-text status-muted">{{sam3_runtime_status_text}}</span>
         </div>
-        <div class="setting-row masking-status-row">
+        <div class="setting-row masking-status-row" data-if="sam3_weights_good">
+          <span class="prop-label">Weights</span>
+          <span class="status-text status-good">{{sam3_weights_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_weights_bad">
+          <span class="prop-label">Weights</span>
+          <span class="status-text status-bad">{{sam3_weights_status_text}}</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="sam3_weights_muted">
           <span class="prop-label">Weights</span>
           <span class="status-text status-muted">{{sam3_weights_status_text}}</span>
         </div>
@@ -461,12 +493,47 @@
           <span class="prop-label"></span>
           <button class="btn btn--primary" data-event-click="install_premium_tier" data-attr-disabled="sam3_install_disabled">{{sam3_install_button_text}}</button>
         </div>
+        <div class="setting-row" data-if="show_sam3_download_destination">
+          <span class="status-text status-muted">{{sam3_download_destination_text}}</span>
+        </div>
+        <div class="setting-row hf-heading-row">
+          <span class="prop-label">This PC</span>
+          <div class="inline-input-row">
+            <button class="btn btn--secondary btn--compact" data-event-click="browse_sam3_checkpoint" data-attrif-disabled="install_busy">Browse…</button>
+          </div>
+        </div>
+        <div class="setting-row" data-if="show_sam3_local_stale">
+          <div class="inline-input-row">
+            <span class="status-text sam3-local-path sam3-local-path--stale">{{sam3_local_path}}</span>
+            <button class="btn btn--secondary btn--compact" data-event-click="clear_sam3_checkpoint" data-attrif-disabled="install_busy">Clear</button>
+          </div>
+        </div>
+        <div class="setting-row" data-if="show_sam3_local_stale">
+          <span class="status-text status-muted">The file you chose is no longer at that location. Choose it again, or clear it to download the weights from HuggingFace instead.</span>
+        </div>
+        <div class="setting-row" data-if="show_sam3_local_reject">
+          <span class="status-text status-muted">{{sam3_local_reject_text}}</span>
+        </div>
       </div>
 
       <!-- SAM 3 path — ready -->
       <div data-if="show_masking_sam3_ready">
         <div class="setting-row">
           <span class="status-text status-muted">SAM 3 is ready for masking.</span>
+        </div>
+        <div class="setting-row masking-status-row" data-if="show_sam3_weights_from">
+          <span class="prop-label">Weights from</span>
+          <span class="status-text status-good">{{sam3_weights_from_text}}</span>
+        </div>
+        <div class="setting-row" data-if="show_sam3_local_picked">
+          <div class="inline-input-row">
+            <span class="status-text sam3-local-path">{{sam3_local_path}}</span>
+            <button class="btn btn--secondary btn--compact" data-event-click="browse_sam3_checkpoint">Change…</button>
+            <button class="btn btn--secondary btn--compact" data-event-click="clear_sam3_checkpoint">Clear</button>
+          </div>
+        </div>
+        <div class="setting-row" data-if="show_sam3_local_picked">
+          <span class="status-text status-muted">The plugin is using your own copy of the weights. SAM 3 is licensed by Meta, and supplying the file here assumes you have accepted those terms on HuggingFace.</span>
         </div>
         <div class="setting-row">
           <span class="prop-label">Enable</span>

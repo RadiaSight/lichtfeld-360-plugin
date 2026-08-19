@@ -443,7 +443,12 @@ class Sam3Backend:
                 logger.warning("Could not patch SAM 3 decoder attention: %s", exc)
 
         logger.info("Loading SAM 3 image model (FA3=%s)...", fa3_available)
-        self._model = build_model(bpe_path=get_sam3_bpe_path())
+        import os
+        from .setup_checks import get_local_checkpoint
+        ckpt = get_local_checkpoint()
+        if ckpt is not None and not os.path.isfile(ckpt):
+            ckpt = None
+        self._model = build_model(bpe_path=get_sam3_bpe_path(), checkpoint_path=ckpt)
         self._model = self._model.to(self._device)
         self._model.eval()
         self._processor = processor_cls(

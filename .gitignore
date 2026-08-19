@@ -7,6 +7,7 @@ settings.json
 *.egg-info/
 masking_setup_debug.txt
 .hf_access_verified
+.sam3_local_checkpoint
 .lichtfeld-source.json
 .tmp-dll/
 lib/vocab_tree*.bin
