@@ -268,7 +268,7 @@ CAMERA_FAMILY_LABELS = ["DJI Osmo 360", "Insta360"]
 # Scrub field specifications — keys MUST match the data-value attribute in the RML
 SCRUB_FIELD_SPECS = {
     "extract_fps_str": ScrubFieldSpec(
-        min_value=0.1, max_value=5.0, step=0.1, fmt="%.1f", data_type=float,
+        min_value=0.1, max_value=30.0, step=0.1, fmt="%.1f", data_type=float,
     ),
     "jpeg_quality_str": ScrubFieldSpec(
         min_value=50.0, max_value=100.0, step=1.0, fmt="%d", data_type=int,
@@ -328,6 +328,9 @@ class Plugin360Panel(lf.ui.Panel):
     order = 10100
     template = str(Path(__file__).resolve().with_name("prep360_panel.rml"))
     height_mode = _PANEL_HEIGHT_CONTENT
+    # Background callbacks update Python state; poll on the UI thread to
+    # publish progress and consume completion results even without user input.
+    update_policy = "interval"
     update_interval_ms = 100
 
     def __init__(self):
@@ -1061,6 +1064,7 @@ class Plugin360Panel(lf.ui.Panel):
             self._is_processing,
             self._processing_stage,
             self._processing_progress,
+            self._processing_status,
             tuple(self._processing_log_lines),
             self._error_message,
             self._completion_summary,
@@ -1948,7 +1952,7 @@ class Plugin360Panel(lf.ui.Panel):
     def _set_extract_fps(self, val):
         try:
             v = float(val)
-            if 0.1 <= v <= 5.0:
+            if 0.1 <= v <= 30.0:
                 self._extract_fps = v
         except (ValueError, TypeError):
             pass
@@ -2967,7 +2971,7 @@ class Plugin360Panel(lf.ui.Panel):
 
     def _set_scrub_value(self, prop: str, value: float) -> None:
         if prop == "extract_fps_str":
-            self._extract_fps = max(0.1, min(5.0, float(value)))
+            self._extract_fps = max(0.1, min(30.0, float(value)))
         elif prop == "jpeg_quality_str":
             self._jpeg_quality = max(50, min(100, int(value)))
         elif prop == "colmap_max_matches_str":
@@ -3790,9 +3794,9 @@ class Plugin360Panel(lf.ui.Panel):
     }
 
     # Item count patterns for throughput tracking
-    _RE_REFRAME = re.compile(r"Reframing (\d+)/(\d+)")
-    _RE_EXTRACT = re.compile(r"Extracting (\d+)/(\d+)")
-    _RE_SCORING = re.compile(r"Scoring (\d+)/(\d+)")
+    _RE_REFRAME = re.compile(r"Reframing (\d+)/(\d+)", re.IGNORECASE)
+    _RE_EXTRACT = re.compile(r"Extracting (\d+)/(\d+)", re.IGNORECASE)
+    _RE_SCORING = re.compile(r"Scoring (\d+)/(\d+)", re.IGNORECASE)
 
     # COLMAP substage detection
     _COLMAP_SUBSTAGES = {

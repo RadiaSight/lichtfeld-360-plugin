@@ -311,7 +311,7 @@
       <div class="setting-row setting-row--aligned" data-class-row-disabled="extract_controls_disabled">
         <span class="setting-row__label-col">FPS</span>
         <div class="setting-row__control-col setting-row__control-col--slider">
-          <input type="range" class="setting-slider" data-value="extract_fps_str" min="0.1" max="5.0" step="0.1" data-attr-disabled="extract_controls_disabled" />
+          <input type="range" class="setting-slider" data-value="extract_fps_str" min="0.1" max="30.0" step="0.1" data-attr-disabled="extract_controls_disabled" />
           <span class="slider-value">{{extract_fps_str}}</span>
         </div>
       </div>

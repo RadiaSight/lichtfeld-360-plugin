@@ -538,7 +538,11 @@ CancelCheck = Callable[[], bool]
 
 _PLUGIN_DIR = Path(__file__).resolve().parent.parent
 _PLUGIN_LIB_DIR = str(_PLUGIN_DIR / "lib")
-_VENV_PYTHON = str(_PLUGIN_DIR / ".venv" / "Scripts" / "python.exe")
+_VENV_PYTHON = str(
+    _PLUGIN_DIR / ".venv" / "Scripts" / "python.exe"
+    if os.name == "nt"
+    else _PLUGIN_DIR / ".venv" / "bin" / "python"
+)
 
 # Bundled faiss-format vocabulary trees (pycolmap 4.1+, COLMAP post-May 2025).
 # One per feature type — COLMAP requires matching feature type.
