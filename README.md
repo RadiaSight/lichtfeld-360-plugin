@@ -10,6 +10,7 @@ Forked from [alexmgee/lichtfeld-360-plugin](https://github.com/alexmgee/lichtfel
 
 - **Linux CUDA dependencies:** use `pycolmap-cuda12==4.1.0` and the CUDA 12.8 PyTorch index on Linux, avoiding the CPU-only PyCOLMAP build and conflicting CUDA 13 dependencies.
 - **Linux worker launch:** use `.venv/bin/python` on Linux instead of the hard-coded Windows `Scripts/python.exe` path.
+- **SAM 3 model browser:** use KDE's `kdialog` (or `zenity`) on Linux instead of silently failing through a Windows-only picker.
 - **Progress display:** explicitly poll the panel every 100 ms, detect status-text changes, and recognize lowercase extraction/scoring messages. This addresses stale “Pipeline queued” and extraction labels.
 - **Frame sampling:** raise the FPS control limit from 5 to 30. For dual-fisheye footage, each sampled frame pair produces two lens images.
 

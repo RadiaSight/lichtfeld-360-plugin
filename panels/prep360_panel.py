@@ -24,6 +24,7 @@ except ImportError:
 
 from ..core.analyzer import VideoAnalyzer, VideoInfo
 from ..core.colmap_runner import MATCH_BUDGETS
+from ..core.file_dialog import open_linux_file
 from ..core.mask_diagnostics import (
     format_mask_diagnostics_overview,
     get_mask_diagnostics_summary,
@@ -2174,12 +2175,18 @@ class Plugin360Panel(lf.ui.Panel):
         if self._install_busy:
             return
         try:
-            path = _open_file_via_win32(
-                "Select SAM 3 Weights",
-                [("SAM 3 weights", "*.pt"), ("All files", "*.*")],
-            )
-        except OSError:
-            logger.warning("SAM 3 weights browse requires Windows")
+            if os.name == "nt":
+                path = _open_file_via_win32(
+                    "Select SAM 3 Weights",
+                    [("SAM 3 weights", "*.pt"), ("All files", "*.*")],
+                )
+            else:
+                path = open_linux_file("Select SAM 3 Weights", "*.pt", "SAM 3 weights")
+        except OSError as exc:
+            logger.warning("SAM 3 weights browse failed: %s", exc)
+            self._sam3_local_reject = str(exc)
+            if self._handle:
+                self._handle.dirty_all()
             return
         if not path:
             return  # dialog cancelled: change nothing
